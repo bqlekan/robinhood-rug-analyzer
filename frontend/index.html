@@ -9,15 +9,15 @@
 <body>
   <main class="container">
     <section class="card">
-      <p class="eyebrow">Project Architecture Preview</p>
+      <p class="eyebrow">Public Web Data Risk Screen</p>
       <h1>Robinhood Rug Analyzer</h1>
-      <p class="description">Enter a token contract address to detect the likely blockchain. Rug analysis is intentionally not implemented yet.</p>
+      <p class="description">Enter a token contract address to fetch public market and honeypot data, then generate a transparent heuristic rug-risk score.</p>
       <form id="analyze-form">
         <label for="contract-address">Token Contract Address</label>
         <input id="contract-address" name="contractAddress" type="text" placeholder="0x..." required />
-        <button type="submit">Detect Blockchain</button>
+        <button type="submit">Analyze Token</button>
       </form>
-      <pre id="result" class="result">Waiting for input...</pre>
+      <div id="result" class="result">Waiting for input...</div>
     </section>
   </main>
   <script src="app.js"></script>
