@@ -1,0 +1,17 @@
+# Runtime secrets and local development values
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Logs
+logs/*.log
+
+# OS/editor
+.DS_Store
+.vscode/

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Robinhood Rug Analyzer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <p class="eyebrow">Project Architecture Preview</p>
+      <h1>Robinhood Rug Analyzer</h1>
+      <p class="description">Enter a token contract address to detect the likely blockchain. Rug analysis is intentionally not implemented yet.</p>
+      <form id="analyze-form">
+        <label for="contract-address">Token Contract Address</label>
+        <input id="contract-address" name="contractAddress" type="text" placeholder="0x..." required />
+        <button type="submit">Detect Blockchain</button>
+      </form>
+      <pre id="result" class="result">Waiting for input...</pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
