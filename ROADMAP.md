@@ -136,7 +136,13 @@ and scan tiering must land before the request-heavy detection work.
 
 ---
 
-### M4 — Contract-aware insider/holder filtering
+### M4 — Contract-aware insider/holder filtering ✅ COMPLETE
+
+> **As built:** `detect_insiders` and `profile_token_wallets` take a `known_contracts`
+> skip-set; `analyze_token_contract` builds it from the LP pair address plus any sampled
+> holder flagged `is_contract` (data already on hand — no extra API calls) so the AMM
+> pair is never mislabeled "buyer #1". Backward compatible when the set is omitted.
+> Tests in `tests/test_wallet_intel.py`.
 
 - **Goal:** Exclude known contracts (LP pair, router, infra) from insider detection and
   holder-based "buyer #1" labeling.

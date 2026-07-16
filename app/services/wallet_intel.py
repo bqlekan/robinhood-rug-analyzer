@@ -61,6 +61,7 @@ def detect_insiders(
     holder_percentages: dict[str, float | None],
     *,
     early_count: int | None = None,
+    known_contracts: set[str] | None = None,
 ) -> list[InsiderWallet]:
     """Identify insider wallets from a token's transfer history.
 
@@ -68,6 +69,9 @@ def detect_insiders(
       - early_buyer: among the first wallets to receive the token after launch.
       - dev_recipient: received the token directly from the deployer.
       - dev_funded: sent tokens back to / round-tripped with the deployer.
+
+    `known_contracts` (LP pair, router, other contracts) are excluded so the AMM
+    pair — usually the first post-launch recipient — is never mislabeled a "buyer".
     """
     early_count = early_count or settings.insider_early_buyer_count
     creator_l = (creator or "").lower()
@@ -75,6 +79,7 @@ def detect_insiders(
 
     # Contracts/mint/zero and the creator itself are not "buyers".
     skip = {ZERO, "", creator_l}
+    skip.update((c or "").lower() for c in (known_contracts or set()))
 
     # Early buyers: first distinct recipients in chronological order.
     rank = 0
@@ -176,12 +181,16 @@ async def profile_token_wallets(
     holder_percentages: dict[str, float | None],
     symbol: str | None = None,
     transfers: list[dict] | None = None,
+    known_contracts: set[str] | None = None,
 ) -> tuple[list[InsiderWallet], list[SmartWallet]]:
     """Detect insiders, score smart-wallet proxies, and persist flags.
 
     `transfers` may be passed in already normalized (by the orchestrator, which
     fetches them once for clusters/dev/insiders). When omitted, they are fetched
     here so the function still works standalone.
+
+    `known_contracts` (LP pair, router, sampled-holder contracts) are excluded
+    from insider detection so the AMM pair is not flagged as an early buyer.
     """
     if transfers is None:
         raw = await blockscout_client.get_token_transfers(token_address, pages=settings.transfer_scan_pages)
@@ -189,7 +198,7 @@ async def profile_token_wallets(
     if not transfers:
         return [], []
 
-    insiders = detect_insiders(transfers, creator, holder_percentages)
+    insiders = detect_insiders(transfers, creator, holder_percentages, known_contracts=known_contracts)
 
     # Score smart-wallet proxies for the distinct non-contract participants.
     # ponytail: smart promotion is inert here. smart_wallet_proxy is called

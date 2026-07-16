@@ -52,6 +52,47 @@ def test_detect_insiders_skips_creator_and_zero():
     assert insiders == []
 
 
+LP = "0x1111111111111111111111111111111111111111"
+
+
+def test_detect_insiders_excludes_known_contracts():
+    # M4: the LP/AMM pair is usually the first post-launch recipient; it must not
+    # be flagged as buyer #1. A real EOA that follows still gets detected.
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": LP, "value": 500, "ts": "t1", "method": "mint"},
+        {"from": wallet_intel.ZERO, "to": "0xrealbuyer", "value": 10, "ts": "t2", "method": "transfer"},
+    ]
+    insiders = wallet_intel.detect_insiders(
+        transfers, CREATOR, {}, early_count=5, known_contracts={LP}
+    )
+    addrs = {i.address for i in insiders}
+    assert LP not in addrs
+    assert "0xrealbuyer" in addrs
+    # The real buyer is ranked #1 now that the LP is skipped, not #2.
+    assert insiders[0].address == "0xrealbuyer"
+    assert insiders[0].buy_rank == 1
+
+
+def test_detect_insiders_known_contracts_is_case_insensitive():
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": LP, "value": 500, "ts": "t1", "method": "mint"},
+    ]
+    # Pass the address in a different case than the transfer records use.
+    insiders = wallet_intel.detect_insiders(
+        transfers, CREATOR, {}, early_count=5, known_contracts={LP.upper()}
+    )
+    assert insiders == []
+
+
+def test_detect_insiders_none_known_contracts_is_backward_compatible():
+    # Omitting known_contracts must behave exactly as before.
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": "0xearly1", "value": 10, "ts": "t1", "method": "mint"},
+    ]
+    insiders = wallet_intel.detect_insiders(transfers, CREATOR, {}, early_count=5)
+    assert {i.address for i in insiders} == {"0xearly1"}
+
+
 def test_smart_wallet_proxy_rewards_early_entry_and_distribution():
     # 0xsmart is the first recipient and later distributes most of its position.
     transfers = [

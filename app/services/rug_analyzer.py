@@ -254,12 +254,19 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     )
 
     # Wallet intelligence: insiders + smart-wallet proxies (persists to watchlist).
+    # Known contracts (LP pair + any sampled holder flagged is_contract) are excluded
+    # from insider detection so the AMM pair is not mislabeled "buyer #1". Built from
+    # data already on hand — no extra API calls.
+    known_contracts = {e.address.lower() for e in holder_distribution.top_holders if e.is_contract and e.address}
+    if lp_addr:
+        known_contracts.add(lp_addr.lower())
     insiders, _smart = await wallet_intel.profile_token_wallets(
         normalized,
         creator,
         holder_pcts,
         symbol=(token_info or {}).get("symbol"),
         transfers=transfers,  # reuse the already-fetched transfers; no second network call
+        known_contracts=known_contracts,
     )
     watchlist_hits = _watchlist_hits(list(sampled_holder_set))
 
