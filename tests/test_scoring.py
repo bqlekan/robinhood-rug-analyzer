@@ -1,0 +1,107 @@
+"""Unit tests for the risk scoring engine."""
+
+from app.models.token import (
+    ClusterAnalysis,
+    DevProfile,
+    HolderCluster,
+    HolderDistribution,
+    LaunchpadInfo,
+    LiquidityLock,
+    LiquiditySnapshot,
+    TokenAge,
+    TokenMarketData,
+    VolumeSnapshot,
+)
+from app.services.scoring import score_token
+
+
+def _cluster(pct: float) -> HolderCluster:
+    return HolderCluster(funder_address="0xf", member_addresses=["0xa", "0xb"], combined_percentage=pct)
+
+
+def _healthy_market():
+    return TokenMarketData(
+        liquidity=LiquiditySnapshot(usd=100_000),
+        volume=VolumeSnapshot(h24=50_000),
+    )
+
+
+def test_clean_token_scores_low():
+    analysis = score_token(
+        age=TokenAge(age_hours=2400, age_days=100, source="pair_created_at"),
+        market=_healthy_market(),
+        holders=HolderDistribution(holder_count=5000, top10_percentage=25, top1_percentage=5),
+        clusters=ClusterAnalysis(clusters=[], clustered_percentage=0),
+        dev=DevProfile(dev_holding_percentage=1, reputation="clean"),
+        liquidity_lock=LiquidityLock(status="locked", locked_percentage=100),
+        launchpad=LaunchpadInfo(name="NOXA Fun", confidence="high"),
+        lore=None,
+        data_sources=["test"],
+    )
+    assert analysis.risk_level == "low"
+    assert analysis.risk_score < 25
+
+
+def test_obvious_rug_scores_critical():
+    analysis = score_token(
+        age=TokenAge(age_hours=2, age_days=0.08, source="pair_created_at"),
+        market=TokenMarketData(liquidity=LiquiditySnapshot(usd=500), volume=VolumeSnapshot(h24=100)),
+        holders=HolderDistribution(holder_count=12, top10_percentage=95, top1_percentage=60),
+        clusters=ClusterAnalysis(clusters=[_cluster(40)], clustered_percentage=40),
+        dev=DevProfile(dev_holding_percentage=40, reputation="serial_rugger", tokens_rugged=5),
+        liquidity_lock=LiquidityLock(status="unlocked"),
+        launchpad=LaunchpadInfo(name="Unknown", confidence="low"),
+        lore=None,
+        data_sources=["test"],
+    )
+    assert analysis.risk_level == "critical"
+    assert analysis.risk_score >= 75
+
+
+def test_missing_market_is_penalized():
+    analysis = score_token(
+        age=TokenAge(age_hours=None, age_days=None, source=None),
+        market=None,
+        holders=None,
+        clusters=None,
+        dev=None,
+        liquidity_lock=None,
+        launchpad=None,
+        lore=None,
+        data_sources=["test"],
+    )
+    names = {s.name for s in analysis.signals}
+    assert "No market pair found" in names
+
+
+def test_score_is_capped_at_100():
+    analysis = score_token(
+        age=TokenAge(age_hours=1, age_days=0.04, source="pair_created_at"),
+        market=TokenMarketData(liquidity=LiquiditySnapshot(usd=10), volume=VolumeSnapshot(h24=0)),
+        holders=HolderDistribution(holder_count=5, top10_percentage=99, top1_percentage=90),
+        clusters=ClusterAnalysis(clusters=[_cluster(40), _cluster(40)], clustered_percentage=80),
+        dev=DevProfile(dev_holding_percentage=50, reputation="serial_rugger", tokens_rugged=10),
+        liquidity_lock=LiquidityLock(status="unlocked"),
+        launchpad=LaunchpadInfo(name="Unknown", confidence="low"),
+        lore=None,
+        data_sources=["test"],
+    )
+    assert analysis.risk_score == 100
+
+
+def test_signals_have_categories_and_points():
+    analysis = score_token(
+        age=TokenAge(age_hours=10, age_days=0.4, source="pair_created_at"),
+        market=_healthy_market(),
+        holders=HolderDistribution(holder_count=5000, top10_percentage=20, top1_percentage=3),
+        clusters=None,
+        dev=None,
+        liquidity_lock=LiquidityLock(status="locked"),
+        launchpad=LaunchpadInfo(name="NOXA Fun", confidence="high"),
+        lore=None,
+        data_sources=["test"],
+    )
+    for signal in analysis.signals:
+        assert signal.points > 0
+        assert signal.category
+        assert signal.severity in {"low", "medium", "high", "critical"}

@@ -15,3 +15,9 @@ logs/*.log
 # OS/editor
 .DS_Store
 .vscode/
+
+# Local tooling config
+.claude/
+
+# Runtime data (SQLite watchlist DB is regenerated at runtime)
+data/

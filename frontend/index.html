@@ -3,22 +3,67 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Robinhood Rug Analyzer</title>
+  <title>Robinhood Chain Rug Analyzer</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <main class="container">
-    <section class="card">
-      <p class="eyebrow">Public Web Data Risk Screen</p>
-      <h1>Robinhood Rug Analyzer</h1>
-      <p class="description">Enter a token contract address to fetch public market and honeypot data, then generate a transparent heuristic rug-risk score.</p>
-      <form id="analyze-form">
-        <label for="contract-address">Token Contract Address</label>
-        <input id="contract-address" name="contractAddress" type="text" placeholder="0x..." required />
-        <button type="submit">Analyze Token</button>
+    <header class="hero">
+      <p class="eyebrow">Robinhood Chain · Rug Risk Intelligence</p>
+      <h1>Robinhood Chain Rug Analyzer</h1>
+      <p class="description">
+        Rank Robinhood Chain tokens by rug risk and drill into any token: age, holders, clusters,
+        dev holdings and history, liquidity lock, launchpad, and social lore. Built entirely on
+        free public data sources.
+      </p>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="scan">Ranked Scanner</button>
+      <button class="tab" data-tab="analyze">Analyze a Token</button>
+      <button class="tab" data-tab="wallets">Smart Wallets</button>
+    </nav>
+
+    <!-- Ranked scanner -->
+    <section id="tab-scan" class="tab-panel active">
+      <form id="scan-form" class="controls">
+        <label for="scan-limit">Tokens to scan</label>
+        <input id="scan-limit" name="limit" type="number" min="1" max="50" value="10" />
+        <label class="checkbox"><input id="scan-lore" type="checkbox" /> Include lore (slower)</label>
+        <button type="submit">Scan &amp; Rank</button>
       </form>
-      <div id="result" class="result">Waiting for input...</div>
+      <div id="scan-status" class="status">Run a scan to rank active Robinhood Chain tokens by risk.</div>
+      <div id="scan-results" class="ranked-list"></div>
     </section>
+
+    <!-- Single token -->
+    <section id="tab-analyze" class="tab-panel">
+      <form id="analyze-form" class="controls">
+        <label for="contract-address">Token contract address</label>
+        <input id="contract-address" name="contractAddress" type="text" placeholder="0x..." required />
+        <label class="checkbox"><input id="analyze-lore" type="checkbox" checked /> Include lore</label>
+        <button type="submit">Analyze</button>
+      </form>
+      <div id="result" class="status">Enter a Robinhood Chain token contract address.</div>
+    </section>
+
+    <!-- Smart wallets watchlist -->
+    <section id="tab-wallets" class="tab-panel">
+      <form id="wallets-form" class="controls">
+        <label>On-chain wallet intelligence</label>
+        <button type="submit">Refresh Watchlist</button>
+      </form>
+      <div id="wallets-note" class="status">
+        Smart-wallet scores are heuristic estimates from free on-chain behavior, not verified ROI.
+        Analyze or scan tokens to populate the watchlist.
+      </div>
+      <div id="wallets-results"></div>
+    </section>
+
+    <footer class="footnote">
+      Heuristic screening only, not financial advice. Data from DexScreener, Blockscout (Robinhood Chain),
+      and public web search. Always do your own research.
+    </footer>
   </main>
   <script src="app.js"></script>
 </body>

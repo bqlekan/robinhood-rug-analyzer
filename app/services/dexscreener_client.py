@@ -5,19 +5,21 @@ from typing import Any
 
 import httpx
 
+from app.core.config import settings
+from app.services.http import get_client
+
 logger = logging.getLogger(__name__)
 
 DEXSCREENER_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 
 
 async def fetch_token_pairs(address: str) -> list[dict[str, Any]]:
-    """Fetch public pair data from DexScreener for a token address."""
+    """Fetch public pair data from DexScreener, filtered to Robinhood Chain only."""
     url = DEXSCREENER_TOKEN_URL.format(address=address)
     try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={"Accept": "application/json"})
-            response.raise_for_status()
-            payload = response.json()
+        response = await get_client().get(url, headers={"Accept": "application/json"})
+        response.raise_for_status()
+        payload = response.json()
     except httpx.HTTPError as exc:
         logger.warning("DexScreener request failed for %s: %s", address, exc)
         return []
@@ -28,7 +30,8 @@ async def fetch_token_pairs(address: str) -> list[dict[str, Any]]:
     pairs = payload.get("pairs") or []
     if not isinstance(pairs, list):
         return []
-    return pairs
+    # Enforce single-chain scope: only keep Robinhood Chain pairs.
+    return [p for p in pairs if (p.get("chainId") or "").lower() == settings.dexscreener_chain]
 
 
 def choose_best_pair(pairs: list[dict[str, Any]]) -> dict[str, Any] | None:

@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+"""Weighted, explainable rug-risk scoring.
+
+Every risk dimension contributes zero or more `RiskSignal`s with point values.
+The final score is the capped sum, so each contribution stays auditable in the UI.
+"""
+
+from app.models.token import (
+    ClusterAnalysis,
+    DevProfile,
+    HolderDistribution,
+    LaunchpadInfo,
+    LiquidityLock,
+    RiskSignal,
+    RugAnalysis,
+    TokenAge,
+    TokenLore,
+    TokenMarketData,
+)
+
+LIMITATIONS = [
+    "This is a heuristic risk screen for Robinhood Chain tokens, not financial advice.",
+    "Public APIs (Blockscout, DexScreener) can be delayed, incomplete, or rate-limited.",
+    "Holder distribution and clusters are computed from a sampled top-holders page, not the full holder set.",
+    "Dev launch history and LP-lock detection depend on public on-chain markers and known registries; absence of evidence is not proof of safety.",
+]
+
+
+def _sig(signals: list[RiskSignal], name: str, category: str, severity: str, points: int, description: str) -> None:
+    signals.append(RiskSignal(name=name, category=category, severity=severity, points=points, description=description))
+
+
+def _score_level(score: int) -> str:
+    if score >= 75:
+        return "critical"
+    if score >= 50:
+        return "high"
+    if score >= 25:
+        return "medium"
+    return "low"
+
+
+def score_token(
+    *,
+    age: TokenAge | None,
+    market: TokenMarketData | None,
+    holders: HolderDistribution | None,
+    clusters: ClusterAnalysis | None,
+    dev: DevProfile | None,
+    liquidity_lock: LiquidityLock | None,
+    launchpad: LaunchpadInfo | None,
+    lore: TokenLore | None,
+    data_sources: list[str],
+) -> RugAnalysis:
+    signals: list[RiskSignal] = []
+
+    # --- Age ---
+    if age and age.age_hours is not None:
+        if age.age_hours < 24:
+            _sig(signals, "Very new token", "age", "high", 20, "Token is less than 24 hours old; new launches carry elevated rug risk.")
+        elif age.age_hours < 72:
+            _sig(signals, "New token", "age", "medium", 10, "Token is less than 3 days old.")
+    else:
+        _sig(signals, "Unknown age", "age", "low", 5, "Could not determine token age from public data.")
+
+    # --- Market / liquidity ---
+    if not market:
+        _sig(signals, "No market pair found", "market", "high", 30, "DexScreener returned no active Robinhood Chain liquidity pair.")
+    else:
+        liq = market.liquidity.usd if market.liquidity else None
+        vol = market.volume.h24 if market.volume else None
+        chg = market.price_change.h24 if market.price_change else None
+        if liq is None:
+            _sig(signals, "Missing liquidity data", "market", "medium", 15, "Liquidity data is unavailable.")
+        elif liq < 5_000:
+            _sig(signals, "Very low liquidity", "market", "high", 25, "USD liquidity is below $5,000, making exits risky.")
+        elif liq < 25_000:
+            _sig(signals, "Low liquidity", "market", "medium", 12, "USD liquidity is below $25,000.")
+        if vol is None or vol < 1_000:
+            _sig(signals, "Low trading activity", "market", "medium", 10, "24h volume is missing or below $1,000.")
+        if chg is not None and chg <= -50:
+            _sig(signals, "Severe 24h drawdown", "market", "high", 15, "Price is down more than 50% over 24h.")
+        elif chg is not None and chg >= 300:
+            _sig(signals, "Extreme 24h pump", "market", "medium", 10, "Price is up more than 300% over 24h; unstable hype.")
+
+    # --- Holders / distribution ---
+    if holders:
+        if holders.holder_count is not None and holders.holder_count < 50:
+            _sig(signals, "Few holders", "holders", "high", 18, f"Only {holders.holder_count} holders; easy for a few wallets to control price.")
+        elif holders.holder_count is not None and holders.holder_count < 200:
+            _sig(signals, "Low holder count", "holders", "medium", 8, f"{holders.holder_count} holders is still concentrated.")
+        if holders.top1_percentage is not None and holders.top1_percentage >= 30:
+            _sig(signals, "Whale holder", "holders", "high", 18, f"Top holder controls {holders.top1_percentage}% of supply.")
+        if holders.top10_percentage is not None and holders.top10_percentage >= 70:
+            _sig(signals, "Highly concentrated supply", "holders", "high", 20, f"Top 10 holders control {holders.top10_percentage}% of supply.")
+        elif holders.top10_percentage is not None and holders.top10_percentage >= 50:
+            _sig(signals, "Concentrated supply", "holders", "medium", 10, f"Top 10 holders control {holders.top10_percentage}% of supply.")
+
+    # --- Clusters ---
+    if clusters and clusters.clusters:
+        pct = clusters.clustered_percentage or 0
+        if pct >= 25:
+            _sig(signals, "Coordinated holder clusters", "clusters", "high", 18, f"Wallets sharing a common funder hold ~{pct}% of supply; possible coordinated control.")
+        elif pct >= 10:
+            _sig(signals, "Holder clusters detected", "clusters", "medium", 10, f"Shared-funder wallets hold ~{pct}% of supply.")
+
+    # --- Dev ---
+    if dev:
+        if dev.dev_holding_percentage is not None:
+            if dev.dev_holding_percentage >= 20:
+                _sig(signals, "Large dev holdings", "dev", "high", 18, f"Deployer wallet holds {dev.dev_holding_percentage}% of supply.")
+            elif dev.dev_holding_percentage >= 10:
+                _sig(signals, "Notable dev holdings", "dev", "medium", 9, f"Deployer wallet holds {dev.dev_holding_percentage}% of supply.")
+        if dev.reputation == "serial_rugger":
+            _sig(signals, "Serial rugger deployer", "dev", "critical", 35, f"Deployer has {dev.tokens_rugged} prior likely-rugged launches.")
+        elif dev.reputation == "mixed":
+            _sig(signals, "Mixed deployer history", "dev", "medium", 12, f"Deployer has {dev.tokens_rugged} likely-rugged and {dev.tokens_alive} alive launches.")
+        if dev.transferred_out:
+            moved = dev.transferred_out_percentage
+            if moved is not None and moved >= 10:
+                _sig(signals, "Dev distributed large supply", "dev", "high", 16, f"Deployer moved ~{moved}% of supply out to {dev.transfers_out_count} wallet(s); possible pre-dump distribution.")
+            else:
+                _sig(signals, "Dev moved tokens out", "dev", "medium", 8, f"Deployer transferred tokens to {dev.transfers_out_count} other wallet(s).")
+
+    # --- Liquidity lock ---
+    if liquidity_lock:
+        if liquidity_lock.status == "unlocked":
+            _sig(signals, "Liquidity not locked", "liquidity", "high", 20, "No known locker or burn address holds the LP; liquidity can be pulled.")
+        elif liquidity_lock.status == "unknown":
+            _sig(signals, "LP lock status unknown", "liquidity", "medium", 8, "Could not confirm whether liquidity is locked or burned.")
+
+    # --- Launchpad ---
+    if launchpad and launchpad.name == "Unknown":
+        _sig(signals, "Unknown launchpad", "launchpad", "low", 5, "Token was not launched from a recognized launchpad; origin unclear.")
+
+    # --- Lore sentiment ---
+    if lore and lore.sentiment == "negative":
+        _sig(signals, "Negative social sentiment", "lore", "medium", 10, "Public discussion around this token skews negative (scam/rug mentions).")
+
+    score = min(sum(s.points for s in signals), 100)
+    return RugAnalysis(
+        risk_score=score,
+        risk_level=_score_level(score),
+        signals=signals,
+        data_sources=data_sources,
+        limitations=LIMITATIONS,
+    )

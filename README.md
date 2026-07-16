@@ -1,41 +1,52 @@
-# Robinhood Rug Analyzer
+# Robinhood Chain Rug Analyzer
 
-FastAPI web app for screening token contract addresses against public web data sources and returning a transparent heuristic rug-risk score.
+FastAPI web app that screens tokens on **Robinhood Chain** for rug-pull risk. It ranks active tokens by risk and produces a transparent, explainable score for any single token, built entirely on free public data sources.
 
 ## What It Does
 
-- Accepts a token contract address from the frontend or API.
-- Detects the likely blockchain from address format and DexScreener pair metadata.
-- Fetches public market data from DexScreener.
-- Fetches EVM honeypot simulation data from Honeypot.is when available.
-- Calculates a risk score from visible signals such as missing liquidity, low liquidity, low volume, large drawdowns, extreme pumps, honeypot status, and high sell tax.
-- Shows limitations clearly so users know this is a screening tool, not financial advice.
+- **Ranked scanner** — pulls active Robinhood Chain tokens and ranks them by rug-risk score.
+- **Single-token drill-down** — full analysis for any contract address across these dimensions:
+  - **Age** — how new the token/pair is.
+  - **Market data** — price, liquidity, volume, and price change from DexScreener.
+  - **Holder distribution** — holder count and top-1 / top-10 concentration from a sampled holders page.
+  - **Clusters** — groups of holders that share a common funding wallet (possible coordinated control).
+  - **Dev profile** — deployer address, dev holdings, and best-effort launch reputation.
+  - **Liquidity lock** — whether LP tokens are burned or held by a known locker.
+  - **Launchpad** — origin detection against a known-launchpad registry.
+  - **Lore** — social narrative and sentiment via public web search.
+- Produces a **0–100 weighted risk score** where every point is attributable to a named, categorized signal.
+- Surfaces **limitations** clearly: this is a heuristic screen, not financial advice.
 
 ## Project Structure
 
 ```text
 robinhood-rug-analyzer/
 +-- app/
-|   +-- api/                 # FastAPI route handlers
-|   +-- core/                # Settings and logging setup
+|   +-- api/                 # FastAPI route handlers (/analyze, /scan, /chain)
+|   +-- core/                # Settings (chain config) and logging setup
 |   +-- models/              # Pydantic request/response schemas
-|   +-- services/            # Blockchain detection, data clients, rug analyzer
-|   +-- main.py              # FastAPI app entrypoint
-+-- frontend/                # Static HTML/CSS/JavaScript UI
-+-- logs/                    # Runtime logs
-+-- .env.example             # Example API key/config values
-+-- .gitignore
-+-- README.md
+|   +-- services/
+|   |   +-- blockscout_client.py     # Robinhood Chain explorer (tokens, holders, txs)
+|   |   +-- dexscreener_client.py    # Market pairs, price, liquidity, volume
+|   |   +-- lore_client.py           # Public web search + sentiment
+|   |   +-- launchpad_registry.py    # Known launchpads / lockers / burn addresses
+|   |   +-- analyzers.py             # Pure per-dimension analysis
+|   |   +-- scoring.py               # Weighted, explainable risk scoring
+|   |   +-- rug_analyzer.py          # Orchestrator: analyze one token / scan+rank
+|   +-- main.py              # FastAPI app entrypoint (serves API + frontend)
++-- frontend/                # Static HTML/CSS/JavaScript UI (scanner + drill-down)
++-- tests/                   # Unit tests for analyzers, scoring, and lore parsing
 +-- render.yaml              # Render deployment config
 +-- requirements.txt
 ```
 
 ## Data Sources
 
-- DexScreener public API for token pair, price, liquidity, volume, and price-change data.
-- Honeypot.is public API for EVM honeypot and tax simulation where supported.
+- **Blockscout (Robinhood Chain)** — token metadata, holders, and address/transaction data.
+- **DexScreener** — token pair, price, liquidity, volume, and price-change data.
+- **DuckDuckGo HTML search** — public social/news lore and sentiment signals.
 
-The app does not scrape private pages or bypass access controls. It uses public web APIs designed for programmatic access.
+All sources are free and public. The app does not scrape private pages, use API keys, or bypass access controls.
 
 ## Local Setup
 
@@ -50,41 +61,67 @@ Then open `http://127.0.0.1:8000`.
 
 ## API Usage
 
+Analyze a single token:
+
 ```text
 POST /api/v1/analyze
+{ "contract_address": "0x...", "include_lore": true }
 ```
 
-Example body:
+Scan and rank active tokens:
 
-```json
-{
-  "contract_address": "0x0000000000000000000000000000000000000000"
-}
+```text
+POST /api/v1/scan
+{ "limit": 10, "include_lore": false }
 ```
 
-Example response fields:
+Chain info:
 
-- `detected_blockchain` - likely chain from DexScreener or address format.
-- `market_data` - best liquidity pair data from DexScreener.
-- `honeypot_data` - honeypot and tax simulation fields when available.
-- `analysis.risk_score` - 0 to 100 heuristic score.
-- `analysis.risk_level` - `low`, `medium`, `high`, or `critical`.
-- `analysis.signals` - explainable risk signals that contributed to the score.
-
-## Environment Variables
-
-Copy or edit `.env.example` for local `.env` values:
-
-```env
-APP_NAME="Robinhood Rug Analyzer"
-ENVIRONMENT="development"
-LOG_LEVEL="INFO"
-ETHERSCAN_API_KEY=""
-BSCSCAN_API_KEY=""
-POLYGONSCAN_API_KEY=""
+```text
+GET /api/v1/chain
 ```
 
-Explorer API keys are reserved for future deeper checks such as verified source code, ownership, holder concentration, and LP lock analysis.
+Smart-wallet watchlist (insiders + smart-wallet proxies discovered during analysis/scans):
+
+```text
+GET /api/v1/watchlist          # grouped smart + insider wallets with recent buys
+GET /api/v1/wallet/{address}   # one watchlisted wallet's detail
+```
+
+Key response fields for `/analyze`:
+
+- `token_age`, `market_data`, `holders`, `clusters`, `dev`, `liquidity_lock`, `launchpad`, `lore`
+- `insiders` — early buyers and deployer-funded wallets detected from sampled transfers.
+- `watchlist_hits` — watchlisted smart/insider wallets that currently hold this token.
+- `analysis.risk_score` — 0 to 100 heuristic score.
+- `analysis.risk_level` — `low`, `medium`, `high`, or `critical`.
+- `analysis.signals` — explainable risk signals (name, category, severity, points) that produced the score.
+- `analysis.limitations` — caveats on data completeness and interpretation.
+
+Smart-wallet scores are heuristic estimates from free on-chain behavior (early entry, position
+distribution, count of surviving tokens held), not verified trade-level ROI.
+
+## Configuration
+
+Chain targeting and analysis knobs live in `app/core/config.py` (overridable via environment/`.env`):
+
+- Blockscout base URL, DexScreener chain id, and chain name/id for Robinhood Chain.
+- `holder_sample_size` — how many top holders to sample.
+- `scan_max_tokens` — upper bound on tokens per scan.
+- `insider_early_buyer_count` — how many earliest recipients to flag as insiders.
+- `smart_wallet_min_proxy_score` — threshold to promote a wallet to "smart" on the watchlist.
+- `transfer_scan_pages` — transfer pages fetched per token for insider/cluster/dev depth.
+- `watchlist_db_path`, `watchlist_refresh_enabled`, `watchlist_refresh_seconds`, `watchlist_refresh_batch` — SQLite-backed watchlist and its optional background refresh.
+
+No third-party API keys are required. The watchlist is stored in a local SQLite file (`watchlist_db_path`).
+
+## Testing
+
+```bash
+python -m pytest tests/ -q
+```
+
+The suite covers the pure analysis dimensions, the scoring engine (clean vs. rug, score capping), and lore parsing — all without network access.
 
 ## Render Deployment
 
@@ -95,4 +132,4 @@ This project includes `render.yaml` for Render's free web service tier.
 
 ## Limitations
 
-This is an early heuristic screening tool. It does not guarantee that a token is safe or unsafe. Public APIs can be delayed, unavailable, incomplete, or rate-limited. Always perform manual due diligence before making financial decisions.
+This is a heuristic screening tool, not financial advice. Holder distribution and clusters are computed from a sampled top-holders page, not the full holder set. Dev history and LP-lock detection rely on public on-chain markers and known registries — absence of evidence is not proof of safety. Insider and smart-wallet labels are behavioral heuristics derived from sampled transfers (early entry, deployer funding, position distribution); free public APIs do not expose trade-level profit, so "smart" is an estimate, not verified ROI. Public APIs can be delayed, incomplete, or rate-limited. Always do your own research before making financial decisions.

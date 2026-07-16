@@ -1,27 +1,28 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
+from app.core.config import settings
 from app.models.token import (
-    HoneypotData,
     LiquiditySnapshot,
     PriceChangeSnapshot,
-    RiskSignal,
-    RugAnalysis,
+    RankedToken,
+    ScanResponse,
     TokenAnalysisResponse,
+    TokenLore,
     TokenMarketData,
     VolumeSnapshot,
 )
-from app.services.blockchain_detector import detect_blockchain
+from app.models.token import WatchlistHit
+from app.models.token import is_valid_address
+from app.services import analyzers, blockscout_client, contract_intel, launchpad_registry, wallet_intel, watchlist_store
+from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
-from app.services.honeypot_client import fetch_honeypot_data
+from app.services.lore_client import build_lore
+from app.services.scoring import LIMITATIONS, score_token
 
-
-def _to_float(value: object) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+logger = logging.getLogger(__name__)
 
 
 def _build_market_data(pair: dict | None) -> TokenMarketData | None:
@@ -33,6 +34,14 @@ def _build_market_data(pair: dict | None) -> TokenMarketData | None:
     liquidity = pair.get("liquidity") or {}
     volume = pair.get("volume") or {}
     price_change = pair.get("priceChange") or {}
+    info = pair.get("info") or {}
+
+    websites = [w.get("url") for w in (info.get("websites") or []) if isinstance(w, dict) and w.get("url")]
+    socials = [
+        {"type": s.get("type", ""), "url": s.get("url", "")}
+        for s in (info.get("socials") or [])
+        if isinstance(s, dict) and s.get("url")
+    ]
 
     return TokenMarketData(
         chain_id=pair.get("chainId"),
@@ -42,146 +51,339 @@ def _build_market_data(pair: dict | None) -> TokenMarketData | None:
         base_token_symbol=base_token.get("symbol"),
         quote_token_symbol=quote_token.get("symbol"),
         price_usd=pair.get("priceUsd"),
-        market_cap=_to_float(pair.get("marketCap")),
-        fdv=_to_float(pair.get("fdv")),
+        market_cap=to_float(pair.get("marketCap")),
+        fdv=to_float(pair.get("fdv")),
         liquidity=LiquiditySnapshot(
-            usd=_to_float(liquidity.get("usd")),
-            base=_to_float(liquidity.get("base")),
-            quote=_to_float(liquidity.get("quote")),
+            usd=to_float(liquidity.get("usd")),
+            base=to_float(liquidity.get("base")),
+            quote=to_float(liquidity.get("quote")),
         ),
         volume=VolumeSnapshot(
-            h24=_to_float(volume.get("h24")),
-            h6=_to_float(volume.get("h6")),
-            h1=_to_float(volume.get("h1")),
-            m5=_to_float(volume.get("m5")),
+            h24=to_float(volume.get("h24")),
+            h6=to_float(volume.get("h6")),
+            h1=to_float(volume.get("h1")),
+            m5=to_float(volume.get("m5")),
         ),
         price_change=PriceChangeSnapshot(
-            h24=_to_float(price_change.get("h24")),
-            h6=_to_float(price_change.get("h6")),
-            h1=_to_float(price_change.get("h1")),
-            m5=_to_float(price_change.get("m5")),
+            h24=to_float(price_change.get("h24")),
+            h6=to_float(price_change.get("h6")),
+            h1=to_float(price_change.get("h1")),
+            m5=to_float(price_change.get("m5")),
         ),
         pair_created_at=pair.get("pairCreatedAt"),
         url=pair.get("url"),
+        websites=websites,
+        socials=socials,
     )
 
 
-def _build_honeypot_data(payload: dict | None) -> HoneypotData | None:
-    if not payload:
+def _dev_holding_pct(creator: str | None, holder_distribution) -> float | None:
+    """Find the deployer's holding percentage from the sampled holders, if present."""
+    if not creator or not holder_distribution:
         return None
-
-    simulation = payload.get("simulationResult") or {}
-    summary = {
-        "token": payload.get("token"),
-        "pair": payload.get("pair"),
-        "flags": payload.get("flags"),
-    }
-
-    return HoneypotData(
-        is_honeypot=payload.get("honeypotResult", {}).get("isHoneypot"),
-        buy_tax=_to_float(simulation.get("buyTax")),
-        sell_tax=_to_float(simulation.get("sellTax")),
-        simulation_success=bool(simulation) if simulation is not None else None,
-        raw_summary={key: value for key, value in summary.items() if value is not None},
-    )
+    creator_l = creator.lower()
+    for entry in holder_distribution.top_holders:
+        if entry.address and entry.address.lower() == creator_l:
+            return entry.percentage
+    return None
 
 
-def _add_signal(signals: list[RiskSignal], name: str, severity: str, points: int, description: str) -> None:
-    signals.append(RiskSignal(name=name, severity=severity, points=points, description=description))
+async def _trace_funders(holder_addresses: list[str]) -> dict[str, str | None]:
+    """For each holder, find the wallet that first sent it native funds (for clustering).
+
+    Bounded and best-effort: runs a handful of concurrent Blockscout lookups.
+    """
+    async def first_funder(addr: str) -> tuple[str, str | None]:
+        txs = await blockscout_client.get_address_transactions(addr)
+        # Earliest incoming tx approximates the funding wallet.
+        incoming = [t for t in txs if ((t.get("to") or {}).get("hash") or "").lower() == addr.lower()]
+        if not incoming:
+            return addr, None
+        earliest = incoming[-1]  # Blockscout returns newest-first.
+        return addr, (earliest.get("from") or {}).get("hash")
+
+    results = await asyncio.gather(*(first_funder(a) for a in holder_addresses), return_exceptions=True)
+    funders: dict[str, str | None] = {}
+    for res in results:
+        if isinstance(res, tuple):
+            funders[res[0]] = res[1]
+    return funders
 
 
-def _score_level(score: int) -> str:
-    if score >= 75:
-        return "critical"
-    if score >= 50:
-        return "high"
-    if score >= 25:
-        return "medium"
-    return "low"
+async def _scan_creator_launches(creator: str | None, this_token: str) -> list:
+    """Find other tokens this deployer created and classify each as alive/rugged.
 
-
-def _analyze(market_data: TokenMarketData | None, honeypot_data: HoneypotData | None, source_count: int) -> RugAnalysis:
-    signals: list[RiskSignal] = []
-
-    if not market_data:
-        _add_signal(
-            signals,
-            "No market pair found",
-            "high",
-            35,
-            "DexScreener did not return active liquidity pairs for this address.",
+    Bounded and best-effort: reads a couple of pages of the creator's transactions,
+    picks contract-creation txs, and prices each created token's liquidity via DexScreener.
+    """
+    if not creator:
+        return []
+    try:
+        txs = await blockscout_client.get_address_transactions_paged(
+            creator, pages=settings.transfer_scan_pages
         )
-    else:
-        liquidity_usd = market_data.liquidity.usd if market_data.liquidity else None
-        volume_h24 = market_data.volume.h24 if market_data.volume else None
-        price_change_h24 = market_data.price_change.h24 if market_data.price_change else None
+    except Exception as exc:
+        logger.warning("Creator scan failed for %s: %s", creator, exc)
+        return []
 
-        if liquidity_usd is None:
-            _add_signal(signals, "Missing liquidity", "medium", 20, "Liquidity data is unavailable.")
-        elif liquidity_usd < 5_000:
-            _add_signal(signals, "Very low liquidity", "high", 30, "USD liquidity is below $5,000, making exits risky.")
-        elif liquidity_usd < 25_000:
-            _add_signal(signals, "Low liquidity", "medium", 15, "USD liquidity is below $25,000.")
+    created_addresses: list[str] = []
+    for tx in txs:
+        cc = tx.get("created_contract") or {}
+        addr = cc.get("hash")
+        if addr and addr.lower() != this_token.lower():
+            created_addresses.append(addr)
+    # De-dup, cap to keep the scan cheap.
+    seen: set[str] = set()
+    unique = []
+    for a in created_addresses:
+        if a.lower() not in seen:
+            seen.add(a.lower())
+            unique.append(a)
+    unique = unique[:10]
 
-        if volume_h24 is None or volume_h24 < 1_000:
-            _add_signal(signals, "Low trading activity", "medium", 15, "24h trading volume is missing or below $1,000.")
+    async def classify(addr: str) -> dict:
+        info, pairs = await asyncio.gather(
+            blockscout_client.get_token_info(addr),
+            fetch_token_pairs(addr),
+        )
+        best = choose_best_pair(pairs)
+        liq = None
+        if best:
+            liq = to_float((best.get("liquidity") or {}).get("usd"))
+        return {"address": addr, "info": info, "liquidity_usd": liq}
 
-        if price_change_h24 is not None and price_change_h24 <= -50:
-            _add_signal(signals, "Severe 24h drawdown", "high", 20, "Price is down more than 50% over 24h.")
-        elif price_change_h24 is not None and price_change_h24 >= 200:
-            _add_signal(signals, "Extreme 24h pump", "medium", 15, "Price is up more than 200% over 24h, which can indicate unstable hype.")
+    results = await asyncio.gather(*(classify(a) for a in unique), return_exceptions=True)
+    created = [r for r in results if isinstance(r, dict)]
+    return analyzers.classify_created_tokens(created)
 
-    if honeypot_data is None:
-        _add_signal(signals, "Honeypot check unavailable", "medium", 15, "No honeypot simulation result was available for this token/chain.")
-    else:
-        if honeypot_data.is_honeypot is True:
-            _add_signal(signals, "Honeypot detected", "critical", 70, "The token appears unsellable according to Honeypot.is simulation.")
-        if honeypot_data.sell_tax is not None and honeypot_data.sell_tax >= 20:
-            _add_signal(signals, "High sell tax", "high", 30, "Sell tax is 20% or higher.")
-        elif honeypot_data.sell_tax is not None and honeypot_data.sell_tax >= 10:
-            _add_signal(signals, "Elevated sell tax", "medium", 15, "Sell tax is 10% or higher.")
 
-    if source_count < 2:
-        _add_signal(signals, "Limited source coverage", "low", 5, "Risk score is based on limited public data sources.")
+def _watchlist_hits(holder_addresses: list[str]) -> list[WatchlistHit]:
+    """Cross-reference sampled holders against the persisted smart/insider watchlist."""
+    try:
+        known = watchlist_store.known_addresses()
+    except Exception as exc:
+        logger.warning("Watchlist lookup failed: %s", exc)
+        return []
+    hits: list[WatchlistHit] = []
+    for addr in holder_addresses:
+        info = known.get(addr.lower())
+        if info:
+            hits.append(WatchlistHit(address=addr, kind=info["kind"], proxy_score=info.get("proxy_score")))
+    return hits
 
-    score = min(sum(signal.points for signal in signals), 100)
-    return RugAnalysis(
-        risk_score=score,
-        risk_level=_score_level(score),
-        signals=signals,
-        data_sources=["DexScreener", "Honeypot.is"],
-        limitations=[
-            "This is a heuristic risk screen, not financial advice.",
-            "Ownership, holder distribution, LP lock status, and verified source code checks require chain-specific explorers/API keys.",
-            "Public APIs can be delayed, incomplete, rate-limited, or unavailable.",
-        ],
+
+async def analyze_token_contract(contract_address: str, include_lore: bool = True) -> TokenAnalysisResponse:
+    normalized = contract_address.strip()
+    # Guard the real outbound boundary: /scan reaches here directly with chain-sourced
+    # addresses, bypassing the request model's validator.
+    if not is_valid_address(normalized):
+        raise ValueError(f"Invalid contract address: {contract_address!r}")
+
+    # Fetch market + token info + address info + verified contract source concurrently.
+    pairs_task = fetch_token_pairs(normalized)
+    token_info_task = blockscout_client.get_token_info(normalized)
+    address_info_task = blockscout_client.get_address_info(normalized)
+    holders_task = blockscout_client.get_token_holders(normalized, settings.holder_sample_size)
+    contract_task = contract_intel.fetch_contract_intel(normalized)
+
+    pairs, token_info, address_info, holders_raw, ctr_intel = await asyncio.gather(
+        pairs_task, token_info_task, address_info_task, holders_task, contract_task
     )
 
-
-async def analyze_token_contract(contract_address: str) -> TokenAnalysisResponse:
-    normalized = contract_address.strip()
-    detected_blockchain = detect_blockchain(normalized)
-
-    pairs = await fetch_token_pairs(normalized)
     best_pair = choose_best_pair(pairs)
     market_data = _build_market_data(best_pair)
 
-    chain_id = market_data.chain_id if market_data else detected_blockchain
-    honeypot_payload = await fetch_honeypot_data(normalized, chain_id)
-    honeypot_data = _build_honeypot_data(honeypot_payload)
+    data_sources: list[str] = ["DexScreener"] if market_data else []
+    if token_info or address_info or holders_raw:
+        data_sources.append("Blockscout (Robinhood Chain)")
 
-    source_count = int(market_data is not None) + int(honeypot_data is not None)
-    analysis = _analyze(market_data, honeypot_data, source_count)
+    # Age.
+    contract_created_iso = None
+    if address_info:
+        # Blockscout exposes creation via a separate lookup; fall back to pair timestamp.
+        contract_created_iso = None
+    age = analyzers.analyze_age(
+        best_pair.get("pairCreatedAt") if best_pair else None,
+        contract_created_iso,
+    )
 
-    if market_data and market_data.chain_id:
-        detected_blockchain = market_data.chain_id
+    # Holders + distribution. Exclude the DEX pair address so top10/top1 reflect
+    # real wallets, not the AMM pool itself.
+    total_supply = (token_info or {}).get("total_supply")
+    decimals = (token_info or {}).get("decimals")
+    holder_count = to_int((token_info or {}).get("holders_count"))
+    lp_addr = best_pair.get("pairAddress") if best_pair else None
+    holder_distribution = analyzers.analyze_holders(
+        holders_raw, holder_count, total_supply, decimals, lp_address=lp_addr
+    )
+
+    creator = (address_info or {}).get("creator_address_hash")
+    creation_tx = (address_info or {}).get("creation_transaction_hash")
+
+    # Pull the token's transfer history once; reuse for clusters, dev outflow,
+    # insiders, and smart-wallet proxies.
+    raw_transfers = await blockscout_client.get_token_transfers(
+        normalized, pages=settings.transfer_scan_pages
+    )
+    transfers = wallet_intel.normalize_transfers(raw_transfers)
+
+    # Clusters: shared-funder + mutual-transfer, merged.
+    cluster_addresses = [
+        e.address for e in holder_distribution.top_holders if e.address and not e.is_contract
+    ][:12]
+    funders = await _trace_funders(cluster_addresses) if cluster_addresses else {}
+    holder_pcts = {e.address: e.percentage for e in holder_distribution.top_holders}
+    sampled_holder_set = {e.address for e in holder_distribution.top_holders if e.address}
+    mutual = analyzers.extract_mutual_transfers(transfers, sampled_holder_set)
+    clusters = analyzers.analyze_clusters(funders, holder_pcts, mutual_transfers=mutual)
+
+    # Dev / creator: holdings, outgoing transfers, and prior launches.
+    supply_units = analyzers._supply_units(total_supply, decimals)
+    dev_holding = _dev_holding_pct(creator, holder_distribution)
+    dev_transfers, dev_moved_pct = analyzers.analyze_dev_transfers(transfers, creator, supply_units)
+    launched_tokens = await _scan_creator_launches(creator, normalized)
+    dev = analyzers.analyze_dev(
+        creator,
+        creation_tx,
+        dev_holding,
+        launched_tokens=launched_tokens,
+        dev_transfers=dev_transfers,
+        transferred_out_percentage=dev_moved_pct or None,
+    )
+
+    # Wallet intelligence: insiders + smart-wallet proxies (persists to watchlist).
+    insiders, _smart = await wallet_intel.profile_token_wallets(
+        normalized,
+        creator,
+        holder_pcts,
+        symbol=(token_info or {}).get("symbol"),
+        transfers=transfers,  # reuse the already-fetched transfers; no second network call
+    )
+    watchlist_hits = _watchlist_hits(list(sampled_holder_set))
+
+    # Liquidity lock: inspect LP token holders of the pair.
+    liquidity_lock = None
+    if best_pair and best_pair.get("pairAddress"):
+        lp_addr = best_pair["pairAddress"]
+        lp_info, lp_holders = await asyncio.gather(
+            blockscout_client.get_token_info(lp_addr),
+            blockscout_client.get_token_holders(lp_addr, settings.holder_sample_size),
+        )
+        liquidity_lock = analyzers.analyze_liquidity_lock(
+            lp_holders, (lp_info or {}).get("total_supply"), (lp_info or {}).get("decimals")
+        )
+
+    # Launchpad. Include the contract intel's template as an extra name hint so
+    # OpenZeppelin/Uniswap/CCIP contracts surface even without a deployer match.
+    contract_name = (token_info or {}).get("name")
+    tags = [t.get("name", "") for t in ((address_info or {}).get("public_tags") or []) if isinstance(t, dict)]
+    if ctr_intel and ctr_intel.template and ctr_intel.template not in {"unknown", "custom"}:
+        tags = tags + [ctr_intel.template]
+    if ctr_intel and ctr_intel.protocol:
+        tags = tags + [ctr_intel.protocol]
+    launchpad = analyzers.analyze_launchpad(creator, contract_name, tags)
+
+    # Lore.
+    lore: TokenLore | None = None
+    if include_lore:
+        name = (token_info or {}).get("name") or (market_data.base_token_name if market_data else None)
+        symbol = (token_info or {}).get("symbol") or (market_data.base_token_symbol if market_data else None)
+        lore = await build_lore(
+            name,
+            symbol,
+            market_data.socials if market_data else [],
+            market_data.websites if market_data else [],
+        )
+        if lore.sources:
+            data_sources.append("Web search (DuckDuckGo)")
+
+    analysis = score_token(
+        age=age,
+        market=market_data,
+        holders=holder_distribution,
+        clusters=clusters,
+        dev=dev,
+        liquidity_lock=liquidity_lock,
+        launchpad=launchpad,
+        lore=lore,
+        data_sources=data_sources or ["none"],
+    )
 
     return TokenAnalysisResponse(
         contract_address=normalized,
-        detected_blockchain=detected_blockchain,
+        chain=settings.chain_name,
         status="analysis_completed",
-        message="Rug-risk heuristic analysis completed using public web data sources.",
+        message="Rug-risk analysis completed for Robinhood Chain token using free public data sources.",
+        token_age=age,
         market_data=market_data,
-        honeypot_data=honeypot_data,
+        holders=holder_distribution,
+        clusters=clusters,
+        dev=dev,
+        liquidity_lock=liquidity_lock,
+        launchpad=launchpad,
+        lore=lore,
+        insiders=insiders,
+        watchlist_hits=watchlist_hits,
         analysis=analysis,
+        contract_intel=ctr_intel,
+    )
+
+
+async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
+    """Pull active Robinhood Chain tokens, analyze each, and rank by risk score."""
+    limit = min(limit, settings.scan_max_tokens)
+    # Pull extra to leave headroom for the established-coin filter (USDT, WETH, etc.).
+    tokens = await blockscout_client.list_tokens(limit=limit * 3)
+    # Skip well-known assets so the scanner focuses on newer creations.
+    tokens = [
+        t for t in tokens
+        if not launchpad_registry.is_established_token(t.get("symbol"), t.get("name"))
+    ][:limit]
+
+    if not tokens:
+        return ScanResponse(
+            chain=settings.chain_name,
+            status="no_tokens",
+            message="Could not retrieve token list from Blockscout.",
+            analyzed=0,
+            ranked_tokens=[],
+            limitations=LIMITATIONS,
+        )
+
+    async def analyze_one(token: dict) -> RankedToken | None:
+        address = token.get("address_hash")
+        if not address:
+            return None
+        try:
+            result = await analyze_token_contract(address, include_lore=include_lore)
+        except Exception as exc:  # keep the scan resilient to a single bad token
+            logger.warning("Scan: analysis failed for %s: %s", address, exc)
+            return None
+        top_signal = max(result.analysis.signals, key=lambda s: s.points).name if result.analysis.signals else None
+        return RankedToken(
+            contract_address=address,
+            name=token.get("name"),
+            symbol=token.get("symbol"),
+            risk_score=result.analysis.risk_score,
+            risk_level=result.analysis.risk_level,
+            holder_count=result.holders.holder_count if result.holders else None,
+            liquidity_usd=result.market_data.liquidity.usd if result.market_data and result.market_data.liquidity else None,
+            market_cap=result.market_data.market_cap if result.market_data else None,
+            age_hours=result.token_age.age_hours if result.token_age else None,
+            age_days=result.token_age.age_days if result.token_age else None,
+            top_signal=top_signal,
+            flagged_by=result.watchlist_hits,
+        )
+
+    results = await asyncio.gather(*(analyze_one(t) for t in tokens))
+    ranked = [r for r in results if r is not None]
+    ranked.sort(key=lambda r: r.risk_score, reverse=True)
+
+    return ScanResponse(
+        chain=settings.chain_name,
+        status="scan_completed",
+        message=f"Analyzed and ranked {len(ranked)} Robinhood Chain tokens by rug risk.",
+        analyzed=len(ranked),
+        ranked_tokens=ranked,
+        limitations=LIMITATIONS,
     )

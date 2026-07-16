@@ -1,10 +1,38 @@
+from __future__ import annotations
+
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# EVM contract address: 0x followed by 40 hex chars. Validated at the trust
+# boundary so malformed input never reaches outbound API calls.
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+
+def is_valid_address(address: str | None) -> bool:
+    return bool(address) and bool(_ADDRESS_RE.match(address.strip()))
 
 
 class TokenAnalysisRequest(BaseModel):
-    contract_address: str = Field(..., min_length=3, description="Token contract address")
+    contract_address: str = Field(..., description="Token contract address on Robinhood Chain")
+    include_lore: bool = Field(True, description="Fetch and interpret social lore for the token")
+
+    @field_validator("contract_address")
+    @classmethod
+    def _validate_address(cls, v: str) -> str:
+        v = v.strip()
+        if not is_valid_address(v):
+            raise ValueError("contract_address must be a 0x-prefixed 40-hex-character address")
+        return v
+
+
+class ScanRequest(BaseModel):
+    limit: int = Field(15, ge=1, le=50, description="How many tokens to analyze and rank")
+    include_lore: bool = Field(False, description="Fetch lore for each token (slower)")
+
+
+# --- Market data (DexScreener) ---
 
 
 class LiquiditySnapshot(BaseModel):
@@ -42,26 +70,214 @@ class TokenMarketData(BaseModel):
     price_change: PriceChangeSnapshot | None = None
     pair_created_at: int | None = None
     url: str | None = None
+    websites: list[str] = Field(default_factory=list)
+    socials: list[dict[str, str]] = Field(default_factory=list)
 
 
-class HoneypotData(BaseModel):
-    is_honeypot: bool | None = None
-    buy_tax: float | None = None
-    sell_tax: float | None = None
-    simulation_success: bool | None = None
-    raw_summary: dict[str, Any] = Field(default_factory=dict)
+# --- Age ---
+
+
+class TokenAge(BaseModel):
+    created_at_iso: str | None = None
+    age_hours: float | None = None
+    age_days: float | None = None
+    source: str | None = None  # "pair_created_at" | "contract_creation"
+
+
+# --- Holders & distribution ---
+
+
+class HolderEntry(BaseModel):
+    address: str
+    percentage: float | None = None
+    value: str | None = None
+    is_contract: bool = False
+    label: str | None = None  # e.g. "UniswapV2Pair", locker name
+    is_scam: bool = False
+
+
+class HolderDistribution(BaseModel):
+    holder_count: int | None = None
+    top10_percentage: float | None = None
+    top1_percentage: float | None = None
+    # Concentration index in [0,1]; higher = more concentrated among the sample.
+    concentration_index: float | None = None
+    sampled_holders: int = 0
+    top_holders: list[HolderEntry] = Field(default_factory=list)
+    # LP pair address (excluded from top_holders and the percentages above).
+    lp_address: str | None = None
+    lp_percentage: float | None = None
+
+
+# --- Clusters ---
+
+
+class HolderCluster(BaseModel):
+    funder_address: str | None = None
+    member_addresses: list[str]
+    combined_percentage: float | None = None
+    # How the members are linked: "shared_funder" | "mutual_transfer" | "mixed"
+    link_type: str = "shared_funder"
+
+
+class ClusterAnalysis(BaseModel):
+    clusters: list[HolderCluster] = Field(default_factory=list)
+    clustered_percentage: float | None = None
+    note: str | None = None
+
+
+# --- Dev / creator ---
+
+
+class LaunchedToken(BaseModel):
+    address: str
+    name: str | None = None
+    symbol: str | None = None
+    liquidity_usd: float | None = None
+    outcome: str  # "alive" | "likely_rugged" | "unknown"
+
+
+class DevTransfer(BaseModel):
+    to_address: str
+    amount_percentage: float | None = None  # % of supply moved, if computable
+    timestamp: str | None = None
+
+
+class DevProfile(BaseModel):
+    creator_address: str | None = None
+    creation_tx: str | None = None
+    dev_holding_percentage: float | None = None
+    tokens_launched: int | None = None
+    tokens_rugged: int | None = None
+    tokens_alive: int | None = None
+    launched_tokens: list[LaunchedToken] = Field(default_factory=list)
+    reputation: str | None = None  # "clean" | "mixed" | "serial_rugger" | "unknown"
+    # Did the deployer move tokens out to other wallets (distribution/dump risk)?
+    transferred_out: bool = False
+    transfers_out_count: int = 0
+    transferred_out_percentage: float | None = None
+    dev_transfers: list[DevTransfer] = Field(default_factory=list)
+    note: str | None = None
+
+
+# --- Liquidity lock ---
+
+
+class LiquidityLock(BaseModel):
+    status: str  # "locked" | "burned" | "unlocked" | "unknown"
+    locked_percentage: float | None = None
+    locker_label: str | None = None
+    detail: str | None = None
+
+
+# --- Launchpad ---
+
+
+class LaunchpadInfo(BaseModel):
+    name: str  # e.g. "NOXA Fun", "Bags", "Pump.fun", "Unknown"
+    confidence: str  # "high" | "medium" | "low"
+    detail: str | None = None
+
+
+# --- Contract intel (source-derived) ---
+
+
+class ContractIntel(BaseModel):
+    verified: bool = False
+    contract_name: str | None = None
+    compiler: str | None = None
+    language: str | None = None
+    # Best-guess template/protocol the source was based on (OpenZeppelin, Uniswap, custom, etc.).
+    template: str = "unknown"
+    # Higher-level protocol family this token was deployed under, if inferable.
+    protocol: str | None = None
+    protocol_confidence: str = "low"  # "high" | "medium" | "low"
+    imports: list[str] = Field(default_factory=list)
+    detail: str | None = None
+
+
+# --- Lore ---
+
+
+class LoreSource(BaseModel):
+    title: str
+    url: str
+    snippet: str | None = None
+    source: str  # "duckduckgo" | "reddit" | "dexscreener"
+
+
+class TokenLore(BaseModel):
+    summary: str | None = None
+    themes: list[str] = Field(default_factory=list)
+    sentiment: str | None = None  # "positive" | "neutral" | "negative" | "unknown"
+    sources: list[LoreSource] = Field(default_factory=list)
+    generated_by: str  # "llm" | "extractive" | "none"
+
+
+# --- Wallet intelligence (insiders + smart-wallet proxy) ---
+
+
+class InsiderWallet(BaseModel):
+    address: str
+    # Why it's flagged: "early_buyer" | "dev_funded" | "dev_recipient"
+    reason: str
+    holding_percentage: float | None = None
+    buy_rank: int | None = None  # 1 = first buyer after launch
+    note: str | None = None
+
+
+class SmartWallet(BaseModel):
+    address: str
+    # Heuristic proxy score in [0,100]. NOT a verified ROI figure.
+    proxy_score: int
+    signals: list[str] = Field(default_factory=list)
+    surviving_tokens: int | None = None
+    estimate_note: str = (
+        "Estimated from free on-chain behavior (early entries, surviving holdings). "
+        "Not a verified ROI; free public APIs lack trade-level profit data."
+    )
+
+
+class WalletActivity(BaseModel):
+    token_address: str
+    symbol: str | None = None
+    direction: str = "buy"  # currently only buys are tracked
+    amount: str | None = None
+    timestamp: str | None = None
+
+
+class WatchlistEntry(BaseModel):
+    address: str
+    kind: str  # "smart" | "insider"
+    proxy_score: int | None = None
+    label: str | None = None
+    first_seen: str | None = None
+    last_refreshed: str | None = None
+    recent_buys: list[WalletActivity] = Field(default_factory=list)
+
+
+class WatchlistHit(BaseModel):
+    """A watchlisted wallet that holds or bought the token under analysis."""
+    address: str
+    kind: str  # "smart" | "insider"
+    proxy_score: int | None = None
+    holding_percentage: float | None = None
+
+
+# --- Scoring ---
 
 
 class RiskSignal(BaseModel):
     name: str
-    severity: str
+    category: str  # age | holders | clusters | dev | liquidity | launchpad | market | lore
+    severity: str  # low | medium | high | critical
     points: int
     description: str
 
 
 class RugAnalysis(BaseModel):
     risk_score: int
-    risk_level: str
+    risk_level: str  # low | medium | high | critical
     signals: list[RiskSignal]
     data_sources: list[str]
     limitations: list[str]
@@ -69,9 +285,49 @@ class RugAnalysis(BaseModel):
 
 class TokenAnalysisResponse(BaseModel):
     contract_address: str
-    detected_blockchain: str
+    chain: str
     status: str
     message: str
+    token_age: TokenAge | None = None
     market_data: TokenMarketData | None = None
-    honeypot_data: HoneypotData | None = None
+    holders: HolderDistribution | None = None
+    clusters: ClusterAnalysis | None = None
+    dev: DevProfile | None = None
+    liquidity_lock: LiquidityLock | None = None
+    launchpad: LaunchpadInfo | None = None
+    contract_intel: ContractIntel | None = None
+    lore: TokenLore | None = None
+    insiders: list[InsiderWallet] = Field(default_factory=list)
+    watchlist_hits: list[WatchlistHit] = Field(default_factory=list)
     analysis: RugAnalysis
+
+
+class RankedToken(BaseModel):
+    contract_address: str
+    name: str | None = None
+    symbol: str | None = None
+    risk_score: int
+    risk_level: str
+    holder_count: int | None = None
+    liquidity_usd: float | None = None
+    market_cap: float | None = None
+    age_hours: float | None = None
+    age_days: float | None = None
+    top_signal: str | None = None
+    # Watchlisted wallets (smart/insider) that bought or hold this token.
+    flagged_by: list[WatchlistHit] = Field(default_factory=list)
+
+
+class ScanResponse(BaseModel):
+    chain: str
+    status: str
+    message: str
+    analyzed: int
+    ranked_tokens: list[RankedToken]
+    limitations: list[str]
+
+
+class WatchlistResponse(BaseModel):
+    smart_wallets: list[WatchlistEntry] = Field(default_factory=list)
+    insider_wallets: list[WatchlistEntry] = Field(default_factory=list)
+    note: str

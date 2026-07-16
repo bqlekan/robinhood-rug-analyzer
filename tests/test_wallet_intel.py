@@ -1,0 +1,76 @@
+"""Unit tests for wallet intelligence pure functions (no network)."""
+
+from app.services import wallet_intel
+
+CREATOR = "0xdead00000000000000000000000000000000beef"
+
+
+def _transfer(frm, to, value, decimals=0, ts="2024-01-01T00:00:00Z"):
+    return {
+        "from": {"hash": frm},
+        "to": {"hash": to},
+        "total": {"value": str(value), "decimals": str(decimals)},
+        "timestamp": ts,
+        "method": "transfer",
+    }
+
+
+def test_normalize_transfers_reverses_and_scales():
+    # Blockscout returns newest-first; normalize should return oldest-first and scale by decimals.
+    raw = [
+        _transfer("0xA", "0xB", 2000, decimals=3, ts="2024-01-02T00:00:00Z"),
+        _transfer(wallet_intel.ZERO, "0xA", 1000, decimals=3, ts="2024-01-01T00:00:00Z"),
+    ]
+    recs = wallet_intel.normalize_transfers(raw)
+    assert recs[0]["from"] == wallet_intel.ZERO  # oldest first
+    assert recs[0]["to"] == "0xa"
+    assert recs[0]["value"] == 1.0  # 1000 / 10**3
+    assert recs[1]["value"] == 2.0
+
+
+def test_detect_insiders_flags_early_buyers_and_dev_recipients():
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": "0xearly1", "value": 10, "ts": "t1", "method": "mint"},
+        {"from": CREATOR, "to": "0xdevfriend", "value": 5, "ts": "t2", "method": "transfer"},
+        {"from": "0xearly1", "to": "0xlate", "value": 1, "ts": "t3", "method": "transfer"},
+    ]
+    pcts = {"0xearly1": 3.0, "0xdevfriend": 2.0}
+    insiders = wallet_intel.detect_insiders(transfers, CREATOR, pcts, early_count=5)
+    reasons = {i.address: i.reason for i in insiders}
+    assert reasons.get("0xdevfriend") == "dev_recipient"
+    assert "0xearly1" in reasons
+    # Dev recipients are ordered first.
+    assert insiders[0].reason == "dev_recipient"
+
+
+def test_detect_insiders_skips_creator_and_zero():
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": CREATOR, "value": 100, "ts": "t1", "method": "mint"},
+        {"from": wallet_intel.ZERO, "to": wallet_intel.ZERO, "value": 1, "ts": "t2", "method": "burn"},
+    ]
+    insiders = wallet_intel.detect_insiders(transfers, CREATOR, {}, early_count=5)
+    assert insiders == []
+
+
+def test_smart_wallet_proxy_rewards_early_entry_and_distribution():
+    # 0xsmart is the first recipient and later distributes most of its position.
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": "0xsmart", "value": 100, "ts": "t1", "method": "mint"},
+        {"from": wallet_intel.ZERO, "to": "0xb", "value": 50, "ts": "t2", "method": "transfer"},
+        {"from": wallet_intel.ZERO, "to": "0xc", "value": 50, "ts": "t3", "method": "transfer"},
+        {"from": "0xsmart", "to": "0xbuyer", "value": 80, "ts": "t4", "method": "transfer"},
+    ]
+    sw = wallet_intel.smart_wallet_proxy("0xsmart", transfers, surviving_tokens=3)
+    assert sw.proxy_score > 0
+    assert any("earliest" in s.lower() for s in sw.signals)
+    assert any("distributed" in s.lower() for s in sw.signals)
+    assert sw.surviving_tokens == 3
+
+
+def test_smart_wallet_proxy_is_capped_at_100():
+    transfers = [
+        {"from": wallet_intel.ZERO, "to": "0xsmart", "value": 100, "ts": "t1", "method": "mint"},
+        {"from": "0xsmart", "to": "0xb", "value": 100, "ts": "t2", "method": "transfer"},
+    ]
+    sw = wallet_intel.smart_wallet_proxy("0xsmart", transfers, surviving_tokens=10)
+    assert sw.proxy_score <= 100
