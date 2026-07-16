@@ -28,6 +28,42 @@ def test_analyze_age_unknown_when_no_data():
     assert age.source is None
 
 
+def test_analyze_age_from_contract_creation_new_token():
+    # No pair timestamp; a fresh contract-creation ISO ~5 hours ago.
+    from datetime import datetime, timedelta, timezone
+
+    iso = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    age = analyzers.analyze_age(None, iso)
+    assert age.source == "contract_creation"
+    assert 4.5 < age.age_hours < 5.5
+
+
+def test_analyze_age_from_contract_creation_old_token():
+    from datetime import datetime, timedelta, timezone
+
+    iso = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    age = analyzers.analyze_age(None, iso)
+    assert age.source == "contract_creation"
+    assert 199 < age.age_days < 201
+
+
+def test_analyze_age_pair_timestamp_wins_over_contract_iso():
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    pair_ms = int((time.time() - 10 * 86400) * 1000)
+    iso = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    age = analyzers.analyze_age(pair_ms, iso)
+    assert age.source == "pair_created_at"
+    assert 9.5 < age.age_days < 10.5
+
+
+def test_analyze_age_bad_iso_falls_back_to_unknown():
+    age = analyzers.analyze_age(None, "not-a-timestamp")
+    assert age.source is None
+    assert age.age_days is None
+
+
 def test_analyze_holders_concentration():
     # 18-decimal token, total supply 1000 tokens. One whale holds 500 (50%).
     supply = "1000" + "0" * 18

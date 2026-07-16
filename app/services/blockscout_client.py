@@ -100,6 +100,21 @@ async def get_smart_contract(address: str) -> dict[str, Any] | None:
     return await cached_call(_static_cache, f"smart_contract:{address.lower()}", fetch)
 
 
+async def get_transaction_timestamp(tx_hash: str) -> str | None:
+    """ISO timestamp of a transaction (used for real contract-creation age).
+
+    Cached: a mined transaction's timestamp is immutable within the TTL.
+    Returns None if the tx is missing or has no timestamp.
+    """
+    async def fetch() -> str | None:
+        payload = await _get(get_client(), f"/transactions/{tx_hash}")
+        return (payload or {}).get("timestamp")
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_static_cache, f"tx_timestamp:{tx_hash.lower()}", fetch)
+
+
 async def get_token_transfers(address: str, pages: int = 1) -> list[dict[str, Any]]:
     """Chronological-ish token transfers for a token (newest first per page).
 

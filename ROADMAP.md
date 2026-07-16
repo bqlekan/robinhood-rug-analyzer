@@ -107,7 +107,12 @@ and scan tiering must land before the request-heavy detection work.
   `score_token_light` in `scoring.py`; policy in `scan_and_rank`. Tests in
   `tests/test_scan_tiering.py`.
 
-### M3 — Real token age from contract creation
+### M3 — Real token age from contract creation ✅ COMPLETE
+
+> **As built:** new cached `blockscout_client.get_transaction_timestamp` reads the
+> creation tx's immutable timestamp; `analyze_token_contract` calls it only when no
+> DexScreener pair timestamp exists, so the pair path is unchanged and pre-liquidity
+> tokens now get real age. Falls back to "unknown" when no creation tx / timestamp.
 
 - **Goal:** Populate `contract_created_iso` from the creation-tx timestamp so age works when
   DexScreener has no pair.

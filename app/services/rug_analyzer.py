@@ -197,11 +197,13 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     if token_info or address_info or holders_raw:
         data_sources.append("Blockscout (Robinhood Chain)")
 
-    # Age.
+    # Age. Prefer the DexScreener pair timestamp; when absent (pre-liquidity tokens),
+    # fall back to the contract's creation-tx timestamp so brand-new launches are not
+    # scored "unknown age". The creation tx is immutable, so this read is cached.
+    creation_tx_hash = (address_info or {}).get("creation_transaction_hash")
     contract_created_iso = None
-    if address_info:
-        # Blockscout exposes creation via a separate lookup; fall back to pair timestamp.
-        contract_created_iso = None
+    if not (best_pair and best_pair.get("pairCreatedAt")) and creation_tx_hash:
+        contract_created_iso = await blockscout_client.get_transaction_timestamp(creation_tx_hash)
     age = analyzers.analyze_age(
         best_pair.get("pairCreatedAt") if best_pair else None,
         contract_created_iso,
