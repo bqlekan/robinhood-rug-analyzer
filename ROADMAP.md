@@ -318,9 +318,23 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 - **Why it matters:** This is the single strongest rug signal that exists and the biggest
   false-negative killer — none of these traps appear in holders/transfers/source-string data.
   Revives the intent of the deleted `honeypot_client.py`, done properly on the RPC layer.
-- **Files/modules:** new simulation module, `rug_analyzer.py` (wire result), `scoring.py`
-  (new signals), `models/token.py`, `frontend/app.js`.
-- **Dependencies:** M9 (RPC), M1 (cache — one sim per analyze, cached).
+- **Deliverables (in order):**
+  - **A. Build the reusable JSON-RPC client** (prerequisite). A small client for raw RPC
+    (`eth_call`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`) against the public
+    RPC, with the URL configurable and errors surfaced as explicit unknowns (never a crash or
+    false "safe"). Consumed by the rest of M10 and later milestones needing raw RPC access
+    (M11 privilege reads, M15). Nothing else in M10 can start until this exists.
+  - **B. Honeypot / sell-tax simulation** — the flagship, built on top of the client from A.
+  - **C. Route M9 creation-tx retrieval through the client** (carried from M9): prefer RPC
+    (`eth_getTransactionByHash` / `eth_getTransactionReceipt`) and **fall back to the current
+    Blockscout path** (`blockscout_client.get_transaction` / `get_transaction_logs`) when RPC
+    is unavailable or errors. M9's launchpad detection consumes whichever source succeeds; the
+    registry-driven matching (`match_creation_evidence`) is source-agnostic and needs no
+    change. See the marker at the M9 creation-evidence block in `rug_analyzer.py`.
+- **Files/modules:** new JSON-RPC client module, new simulation module, `rug_analyzer.py`
+  (wire result), `scoring.py` (new signals), `models/token.py`, `frontend/app.js`.
+- **Dependencies:** M1 (cache — one sim per analyze, cached). Builds its own RPC client (A);
+  does not depend on M9, which shipped on Blockscout.
 - **Effort:** Large · **Risk:** High (correctness of simulation; chain-specific router ABI).
 - **Expected improvement:** Catches unsellable/high-tax rugs metadata can't see.
   Detection Δ: Very High.
@@ -342,7 +356,7 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   (infinite-mint, freeze, fee-flip) — the second-biggest behavior gap after honeypots.
 - **Files/modules:** `contract_intel.py` (ABI parsing), new privilege module, `scoring.py`,
   `models/token.py`, `frontend/app.js`.
-- **Dependencies:** M9 (RPC for live state); ABI already available via `get_smart_contract`.
+- **Dependencies:** M10 (RPC client for live state); ABI already available via `get_smart_contract`.
 - **Effort:** Medium–Large · **Risk:** Med–High.
 - **Expected improvement:** Detects retained-privilege rugs. Detection Δ: High.
 - **Acceptance criteria:** renounced vs owner-retained distinguished; mint/pause/blacklist/fee
@@ -383,7 +397,7 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   a confident *locked*. When evidence is incomplete, return *Unknown* — never a false-safe verdict.
 - **Files/modules:** `analyzers.py` (`analyze_liquidity_lock`), `launchpad_registry.py`
   (locker ABIs), `scoring.py`, new RPC reads.
-- **Dependencies:** M9 (RPC), M8 (populated locker registry).
+- **Dependencies:** M10 (RPC client), M8 (populated locker registry).
 - **Effort:** Medium–Large · **Risk:** Med–High (per-locker ABI knowledge).
 - **Expected improvement:** Distinguishes real long locks from expiring ones. Detection Δ: High.
 - **Acceptance criteria:** near-term unlock scored higher than long lock; unknown locker
@@ -685,7 +699,7 @@ Persistent, growing reputation that turns usage into a moat.
 | Blocker | Gates | How to clear |
 |---|---|---|
 | No caching / concurrency cap | M9–M19 (all request-heavy) | Ship M1 + M2 first |
-| RPC `eth_call` reliability unknown | M9, M10, M13 | Probe public RPC; make RPC URL configurable |
+| RPC `eth_call` reliability unknown | M10, M11, M13 | Probe public RPC; make RPC URL configurable |
 | Per-wallet holdings endpoint unconfirmed | M16 | API probe against Blockscout for this chain |
 | Locker registry empty | M13 (+ M8 quality) | Populate confirmed locker addresses |
 | Labeled rug/non-rug dataset absent | M7 weight back-testing | Accumulate via M19 snapshots, then calibrate |

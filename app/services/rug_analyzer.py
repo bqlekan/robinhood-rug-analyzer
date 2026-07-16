@@ -16,7 +16,7 @@ from app.models.token import (
 )
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
-from app.services import analyzers, blockscout_client, contract_intel, launchpad_registry, wallet_intel, watchlist_store
+from app.services import analyzers, blockscout_client, contract_intel, launchpad_registry, rpc_client, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -172,6 +172,36 @@ def _watchlist_hits(holder_addresses: list[str]) -> list[WatchlistHit]:
     return hits
 
 
+async def _fetch_creation_evidence(creation_tx: str) -> tuple[str | None, list[str] | None]:
+    """Return (factory `to`, log topics) for a creation tx, preferring RPC over Blockscout.
+
+    M10-C: try raw JSON-RPC (`eth_getTransactionByHash` + `eth_getTransactionReceipt`)
+    first; fall back to the Blockscout reads when RPC is unavailable or errors. The
+    downstream `match_creation_evidence` is source-agnostic (it normalizes both), so
+    only the field shapes differ:
+      - RPC tx `to` is a plain hex string; Blockscout tx `to` is `{"hash": ...}`.
+      - RPC receipt logs live under `logs`; Blockscout logs come from a separate call.
+    """
+    tx, receipt = await asyncio.gather(
+        rpc_client.get_transaction_by_hash(creation_tx),
+        rpc_client.get_transaction_receipt(creation_tx),
+    )
+    if tx is not None or receipt is not None:
+        factory = (tx or {}).get("to")
+        logs = (receipt or {}).get("logs") or []
+        topics = [t for log in logs for t in (log.get("topics") or []) if t]
+        return factory, topics
+
+    # RPC gave us nothing usable — fall back to Blockscout.
+    tx_data, logs = await asyncio.gather(
+        blockscout_client.get_transaction(creation_tx),
+        blockscout_client.get_transaction_logs(creation_tx),
+    )
+    factory = ((tx_data or {}).get("to") or {}).get("hash")
+    topics = [t for log in logs for t in (log.get("topics") or []) if t]
+    return factory, topics
+
+
 async def analyze_token_contract(contract_address: str, include_lore: bool = True) -> TokenAnalysisResponse:
     normalized = contract_address.strip()
     # Guard the real outbound boundary: /scan reaches here directly with chain-sourced
@@ -294,17 +324,12 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     # M9: on-chain creation evidence (verified factory `to` = HIGH, verified factory
     # event = MEDIUM). Gated on a non-empty registry so no extra fetches fire in
     # production (empty registry) — the machinery activates only with sourced entries.
+    # M10-C: retrieval now prefers raw JSON-RPC and falls back to Blockscout; the
+    # evidence-matching below is source-agnostic (see _fetch_creation_evidence).
     creation_factory: str | None = None
     creation_log_topics: list[str] | None = None
     if creation_tx and launchpad_registry.has_enabled_launchpads():
-        creation_tx_data, creation_logs = await asyncio.gather(
-            blockscout_client.get_transaction(creation_tx),
-            blockscout_client.get_transaction_logs(creation_tx),
-        )
-        creation_factory = ((creation_tx_data or {}).get("to") or {}).get("hash")
-        creation_log_topics = [
-            t for log in creation_logs for t in (log.get("topics") or []) if t
-        ]
+        creation_factory, creation_log_topics = await _fetch_creation_evidence(creation_tx)
     launchpad = analyzers.analyze_launchpad(
         creator,
         contract_name,
