@@ -52,6 +52,27 @@ class Settings(BaseSettings):
     # Max concurrent deep analyses in flight during a scan (bounds fan-out).
     scan_max_deep_analyses: int = 5
 
+    # --- Honeypot / sell-tax simulation (M10) ---
+    # Inert by default: with no router mapped for a token's DEX, no sim calls fire and
+    # behavior is unchanged. Activates only once a chain router is sourced and mapped.
+    honeypot_sim_enabled: bool = True
+    # dexId (as DexScreener labels it) -> UniswapV2-style router address on this chain.
+    # Empty in production until a router is verified; the sim stays inert while empty.
+    dex_routers: dict[str, str] = {}
+    # Native-token amount (wei) the synthetic buyer spends in the simulated buy leg.
+    honeypot_sim_buy_wei: int = 10**16  # 0.01 native
+    # Sell tax at/above this percent is flagged as a high-severity signal.
+    honeypot_high_tax_pct: float = 30.0
+    # Wrapped-native token address (path hop for buy/sell). Chain-specific; empty = inert.
+    honeypot_weth_address: str | None = None
+    # Compiled prober-contract runtime bytecode, injected via `code` override so the
+    # buy->sell round-trip runs atomically in ONE eth_call (two calls can't share state).
+    # ABI: probe(address router,address weth,address token,uint256 buyWei) returns
+    # (uint256 bought,uint256 soldBack); catches the sell revert and returns soldBack=0.
+    # Empty = inert (executing path needs this artifact; sim degrades to "unknown").
+    honeypot_prober_code: str | None = None
+    honeypot_prober_selector: str = "0x00000000"  # probe(...) selector for the above
+
     # --- Wallet intelligence ---
     # How many of a token's earliest buyers to treat as candidate insiders.
     insider_early_buyer_count: int = 15

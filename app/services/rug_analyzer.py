@@ -16,7 +16,7 @@ from app.models.token import (
 )
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
-from app.services import analyzers, blockscout_client, contract_intel, launchpad_registry, rpc_client, wallet_intel, watchlist_store
+from app.services import analyzers, blockscout_client, contract_intel, honeypot_sim, launchpad_registry, rpc_client, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -352,6 +352,11 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         if lore.sources:
             data_sources.append("Web search (DuckDuckGo)")
 
+    # M10: honeypot / sell-tax simulation. Reuses the already-fetched market pair (no
+    # extra discovery calls); inert unless a router is mapped for this DEX. Its own module
+    # caches an executed verdict, so this stays one sim per analyze.
+    honeypot = await honeypot_sim.simulate(normalized, market_data)
+
     analysis = score_token(
         age=age,
         market=market_data,
@@ -362,6 +367,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         launchpad=launchpad,
         lore=lore,
         data_sources=data_sources or ["none"],
+        honeypot=honeypot,
     )
 
     return TokenAnalysisResponse(
@@ -376,6 +382,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         dev=dev,
         liquidity_lock=liquidity_lock,
         launchpad=launchpad,
+        honeypot=honeypot,
         lore=lore,
         insiders=insiders,
         watchlist_hits=watchlist_hits,

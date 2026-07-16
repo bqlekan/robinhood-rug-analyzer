@@ -10,6 +10,7 @@ from app.models.token import (
     ClusterAnalysis,
     DevProfile,
     HolderDistribution,
+    HoneypotResult,
     LaunchpadInfo,
     LiquidityLock,
     RiskSignal,
@@ -83,6 +84,7 @@ def score_token(
     launchpad: LaunchpadInfo | None,
     lore: TokenLore | None,
     data_sources: list[str],
+    honeypot: HoneypotResult | None = None,
 ) -> RugAnalysis:
     signals: list[RiskSignal] = []
 
@@ -164,6 +166,19 @@ def score_token(
     # --- Launchpad ---
     if launchpad and launchpad.name == "Unknown":
         _sig(signals, "Unknown launchpad", "launchpad", "low", 5, "Token was not launched from a recognized launchpad; origin unclear.")
+
+    # --- Honeypot / sell-tax (M10) ---
+    # Only a positive detection scores. "unknown" (could not simulate) and "sellable"
+    # add no points and are NOT folded into confidence, so a failed sim never inflates
+    # risk nor drags the data-completeness score — it is strictly a bonus detector.
+    if honeypot:
+        if honeypot.status == "honeypot":
+            _sig(signals, "Unsellable in simulation", "honeypot", "critical", 40,
+                 honeypot.detail or "A simulated buy succeeded but the sell reverted; token appears unsellable (honeypot).")
+        elif honeypot.status == "high_tax":
+            tax = honeypot.sell_tax_percentage
+            _sig(signals, "Extreme sell tax", "honeypot", "high", 20,
+                 honeypot.detail or f"Simulated sell incurs a ~{tax}% tax, well above normal.")
 
     # --- Lore sentiment ---
     if lore and lore.sentiment == "negative":

@@ -325,6 +325,19 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     false "safe"). Consumed by the rest of M10 and later milestones needing raw RPC access
     (M11 privilege reads, M15). Nothing else in M10 can start until this exists.
   - **B. Honeypot / sell-tax simulation** — the flagship, built on top of the client from A.
+    **Shipped (inert by default).** `app/services/honeypot_sim.py`: pure ABI encode/decode +
+    `classify()` (honeypot | high_tax | sellable | unknown) and a buy→sell round-trip run
+    atomically in ONE state-override `eth_call` via an injected prober contract (two calls
+    can't share state). Wired through `rug_analyzer` (reuses the fetched market pair, zero
+    discovery calls) into a new additive `honeypot` scoring signal — critical/40 for
+    honeypot, high/20 for extreme tax; `sellable`/`unknown` add nothing and are deliberately
+    kept out of `_CONFIDENCE_WEIGHTS` so a failed sim never distorts risk or confidence.
+    Result cached per-token (one sim per analyze; `unknown` stays retryable). **Inert until
+    config is populated:** needs a per-DEX router address (`dex_routers`), the wrapped-native
+    address (`honeypot_weth_address`), and the compiled prober bytecode
+    (`honeypot_prober_code` + selector) — all empty in production, so no RPC fires and
+    behavior is unchanged. Remaining to activate: source a verified router for this chain and
+    compile/pin the prober artifact (deferred; router-ABI variance is the documented High risk).
   - **C. Route M9 creation-tx retrieval through the client** (carried from M9): prefer RPC
     (`eth_getTransactionByHash` / `eth_getTransactionReceipt`) and **fall back to the current
     Blockscout path** (`blockscout_client.get_transaction` / `get_transaction_logs`) when RPC
@@ -344,6 +357,14 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     simulate," never a crash or false "safe."
 - **Suggested tests:** sim result → signal mapping (pure); failure path yields explicit
   unknown, not a clean score.
+- **RPC probe result (2026-07-16):** the public RPC is **Arbitrum Nitro** (`nitro/v3.11.3`,
+  chain id `0x1237`=4663) and **supports `eth_call` state overrides** — verified by injecting
+  runtime bytecode via the 3rd `eth_call` param and reading back `uint256(42)`. Methods tested:
+  `eth_chainId`, `web3_clientVersion`, `eth_blockNumber`, `eth_call` (identity precompile
+  baseline), `eth_call` with a `{addr:{code}}` state override. **Implication:** the safe
+  buy→sell round-trip via state-override `eth_call` is viable; the standing "RPC reliability"
+  blocker is cleared for override support. The remaining chain-specific unknown is the DEX
+  router address/ABI family (still config-gated, inert until sourced).
 
 ---
 
@@ -699,7 +720,8 @@ Persistent, growing reputation that turns usage into a moat.
 | Blocker | Gates | How to clear |
 |---|---|---|
 | No caching / concurrency cap | M9–M19 (all request-heavy) | Ship M1 + M2 first |
-| RPC `eth_call` reliability unknown | M10, M11, M13 | Probe public RPC; make RPC URL configurable |
+| ~~RPC `eth_call` state-override support~~ | M10 | **Cleared 2026-07-16:** Nitro node supports overrides (see M10 probe result) |
+| DEX router address/ABI unknown for this chain | M10, M13 | Config-gated router map; sim inert until a router is sourced |
 | Per-wallet holdings endpoint unconfirmed | M16 | API probe against Blockscout for this chain |
 | Locker registry empty | M13 (+ M8 quality) | Populate confirmed locker addresses |
 | Labeled rug/non-rug dataset absent | M7 weight back-testing | Accumulate via M19 snapshots, then calibrate |

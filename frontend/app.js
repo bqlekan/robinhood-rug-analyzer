@@ -272,6 +272,7 @@ function renderAnalysis(data) {
       ${card("Dev Holdings", fmtPct(d?.dev_holding_percentage))}
       ${card("Dev Reputation", esc(d?.reputation || "unknown"))}
       ${card("Liquidity Lock", esc((ll?.status || "unknown").toUpperCase()))}
+      ${card("Sellability", esc((data.honeypot?.status || "unknown").toUpperCase()), data.honeypot?.sell_tax_percentage != null ? `~${esc(data.honeypot.sell_tax_percentage)}% round-trip loss` : "simulation")}
       ${card("Launchpad", esc(data.launchpad?.name || "Unknown"))}
       ${card("Clusters", data.clusters?.clusters?.length ?? 0)}
       ${card("Clustered %", fmtPct(data.clusters?.clustered_percentage))}

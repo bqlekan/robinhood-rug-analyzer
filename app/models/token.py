@@ -179,6 +179,17 @@ class LaunchpadInfo(BaseModel):
     detail: str | None = None
 
 
+# --- Honeypot / sell-tax simulation (M10) ---
+
+
+class HoneypotResult(BaseModel):
+    # "honeypot" (unsellable) | "high_tax" | "sellable" | "unknown" (could not simulate).
+    status: str
+    sell_tax_percentage: float | None = None
+    buy_tax_percentage: float | None = None
+    detail: str | None = None
+
+
 # --- Contract intel (source-derived) ---
 
 
@@ -300,6 +311,7 @@ class TokenAnalysisResponse(BaseModel):
     dev: DevProfile | None = None
     liquidity_lock: LiquidityLock | None = None
     launchpad: LaunchpadInfo | None = None
+    honeypot: HoneypotResult | None = None
     contract_intel: ContractIntel | None = None
     lore: TokenLore | None = None
     insiders: list[InsiderWallet] = Field(default_factory=list)

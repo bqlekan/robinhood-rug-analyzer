@@ -5,6 +5,7 @@ from app.models.token import (
     DevProfile,
     HolderCluster,
     HolderDistribution,
+    HoneypotResult,
     LaunchpadInfo,
     LiquidityLock,
     LiquiditySnapshot,
@@ -13,6 +14,45 @@ from app.models.token import (
     VolumeSnapshot,
 )
 from app.services.scoring import score_token
+
+
+def _clean_kwargs():
+    """A clean-token baseline so a honeypot result's contribution is isolated."""
+    return dict(
+        age=TokenAge(age_hours=2400, age_days=100, source="pair_created_at"),
+        market=_healthy_market(),
+        holders=HolderDistribution(holder_count=5000, top10_percentage=25, top1_percentage=5),
+        clusters=ClusterAnalysis(clusters=[], clustered_percentage=0),
+        dev=DevProfile(dev_holding_percentage=1, reputation="clean"),
+        liquidity_lock=LiquidityLock(status="locked", locked_percentage=100),
+        launchpad=LaunchpadInfo(name="NOXA Fun", confidence="high"),
+        lore=None,
+        data_sources=["test"],
+    )
+
+
+def test_honeypot_status_scores_critical():
+    base = score_token(**_clean_kwargs())
+    hp = score_token(**_clean_kwargs(), honeypot=HoneypotResult(status="honeypot"))
+    # +40 points, surfaced as a critical-severity signal (overall level depends on
+    # the other dimensions; on a clean baseline 40 alone is "medium").
+    assert hp.risk_score - base.risk_score == 40
+    assert any(s.category == "honeypot" and s.severity == "critical" for s in hp.signals)
+
+
+def test_high_tax_scores_high_signal():
+    hp = score_token(**_clean_kwargs(), honeypot=HoneypotResult(status="high_tax", sell_tax_percentage=55.0))
+    assert any(s.category == "honeypot" and s.severity == "high" and s.points == 20 for s in hp.signals)
+
+
+def test_sellable_and_unknown_add_no_signal_and_no_confidence_change():
+    base = score_token(**_clean_kwargs())
+    for status in ("sellable", "unknown"):
+        r = score_token(**_clean_kwargs(), honeypot=HoneypotResult(status=status))
+        assert not any(s.category == "honeypot" for s in r.signals)
+        assert r.risk_score == base.risk_score
+        # Honeypot is deliberately absent from confidence weights: unchanged either way.
+        assert r.confidence == base.confidence
 
 
 def _cluster(pct: float) -> HolderCluster:

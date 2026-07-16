@@ -56,12 +56,23 @@ async def _rpc(method: str, params: list[Any]) -> Any | None:
     return (body or {}).get("result") if isinstance(body, dict) else None
 
 
-async def eth_call(to: str, data: str, block: str = "latest") -> str | None:
+async def eth_call(
+    to: str,
+    data: str,
+    block: str = "latest",
+    state_override: dict[str, Any] | None = None,
+) -> str | None:
     """Static call against a contract; returns hex-encoded return data or None.
 
-    Not cached — reads live contract state.
+    `state_override` is the geth/Nitro `eth_call` 3rd param ({address: {code|balance|
+    state...}}), used by the honeypot round-trip to fund a synthetic buyer and inject
+    balances without spending funds. Omitted -> a plain 2-param call. Not cached — reads
+    live contract state.
     """
-    return await _rpc("eth_call", [{"to": to, "data": data}, block])
+    params: list[Any] = [{"to": to, "data": data}, block]
+    if state_override is not None:
+        params.append(state_override)
+    return await _rpc("eth_call", params)
 
 
 async def get_transaction_by_hash(tx_hash: str) -> dict[str, Any] | None:

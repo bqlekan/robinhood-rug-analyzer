@@ -59,6 +59,21 @@ def test_result_field_returned(monkeypatch):
     assert sent["params"] == [{"to": "0xto", "data": "0xdata"}, "latest"]
 
 
+def test_eth_call_omits_override_param_by_default(monkeypatch):
+    client = _use_client(monkeypatch, _FakeClient(body={"result": "0x"}))
+    asyncio.run(rpc_client.eth_call("0xto", "0xdata"))
+    _, sent = client.calls[0]
+    assert sent["params"] == [{"to": "0xto", "data": "0xdata"}, "latest"]  # no 3rd param
+
+
+def test_eth_call_appends_state_override(monkeypatch):
+    client = _use_client(monkeypatch, _FakeClient(body={"result": "0x2a"}))
+    override = {"0xdead": {"code": "0x602a"}}
+    asyncio.run(rpc_client.eth_call("0xto", "0xdata", state_override=override))
+    _, sent = client.calls[0]
+    assert sent["params"] == [{"to": "0xto", "data": "0xdata"}, "latest", override]
+
+
 def test_rpc_error_object_degrades_to_none(monkeypatch):
     _use_client(monkeypatch, _FakeClient(body={"jsonrpc": "2.0", "id": 1,
                                                "error": {"code": -32000, "message": "execution reverted"}}))
