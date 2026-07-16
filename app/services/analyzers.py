@@ -465,6 +465,23 @@ def analyze_liquidity_lock(pair_lp_holders: list[dict], total_lp_supply: object,
 # --- Launchpad ---
 
 
-def analyze_launchpad(creator_address: str | None, contract_name: str | None, tags: list[str] | None) -> LaunchpadInfo:
-    name, confidence, detail = launchpad_registry.detect_launchpad(creator_address, contract_name, tags)
+def analyze_launchpad(
+    creator_address: str | None,
+    contract_name: str | None,
+    tags: list[str] | None,
+    *,
+    creation_factory: str | None = None,
+    creation_log_topics: list[str] | None = None,
+) -> LaunchpadInfo:
+    """Registry-driven launchpad detection.
+
+    On-chain creation evidence (M9) wins when present: a verified factory `to`
+    match (HIGH) or a verified factory event in the creation logs (MEDIUM). Falls
+    back to the creator/name heuristics (detect_launchpad) otherwise.
+    """
+    evidence = launchpad_registry.match_creation_evidence(creation_factory, creation_log_topics)
+    if evidence:
+        name, confidence, detail = evidence
+    else:
+        name, confidence, detail = launchpad_registry.detect_launchpad(creator_address, contract_name, tags)
     return LaunchpadInfo(name=name, confidence=confidence, detail=detail)

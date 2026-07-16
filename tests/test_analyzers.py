@@ -248,6 +248,28 @@ def test_launchpad_unknown():
     assert confidence == "low"
 
 
+def test_analyze_launchpad_creation_evidence_beats_name_heuristic(monkeypatch):
+    # M9: a verified factory `to` match (HIGH) must win over a LOW name heuristic.
+    factory = "0x" + "a" * 40
+    monkeypatch.setattr(
+        launchpad_registry,
+        "LAUNCHPADS",
+        [{"name": "Example Launch", "factory_address": factory, "enabled": True}],
+    )
+    info = analyzers.analyze_launchpad(
+        "0xdeployer", "NOXA Fun Token", None, creation_factory=factory
+    )
+    assert info.name == "Example Launch"
+    assert info.confidence == "high"
+
+
+def test_analyze_launchpad_falls_back_to_heuristic_without_evidence():
+    # No creation evidence -> unchanged detect_launchpad behavior.
+    info = analyzers.analyze_launchpad("0xdeployer", "NOXA Fun Token", None)
+    assert info.name == "NOXA Fun"
+    assert info.confidence == "low"
+
+
 def test_burn_address_detection():
     assert launchpad_registry.is_burn_address("0x0000000000000000000000000000000000000000")
     assert launchpad_registry.locker_label("0x000000000000000000000000000000000000dead") == "Burn address"

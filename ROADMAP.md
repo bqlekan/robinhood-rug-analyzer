@@ -265,7 +265,19 @@ and scan tiering must land before the request-heavy detection work.
 > detection → **M14**; same-block / sniper analysis → **M15**. The registry schema now carries
 > an `event_signatures` field reserved for the M9 MEDIUM tier.
 
-### M9 — RPC layer (shared, bounded) — foundation for behavior analysis
+### M9 — RPC layer (shared, bounded) — foundation for behavior analysis ⚠️ PARTIAL
+
+> **As built:** the fetch-dependent **launchpad detection** half shipped, built on the
+> existing **Blockscout** client (not raw JSON-RPC): new cached `get_transaction` /
+> `get_transaction_logs`; `launchpad_registry.match_creation_evidence` (verified factory
+> `to` → HIGH, verified factory event signature in creation logs → MEDIUM) +
+> `has_enabled_launchpads` gate; `analyze_launchpad` prefers on-chain evidence over the
+> creator/name heuristics. All fetches are gated on a non-empty registry, so with the
+> empty production registry no extra calls fire and behavior is unchanged. Tests use
+> example addresses/signatures only. **Deferred:** the raw `eth_call`/`eth_getStorageAt`
+> JSON-RPC client (Part A) is **not** built — it has an unresolved RPC-probe blocker, is
+> consumed only by M10/M11, and building it unused now would be speculative. It moves to
+> **M10** (its first consumer), where the probe must be resolved first.
 
 - **Goal:** Add a JSON-RPC client using the configured (currently unused) `rpc_url`, sharing
   the bounded pattern from `app/services/http.py`, with `eth_call`/`eth_getStorageAt` support.

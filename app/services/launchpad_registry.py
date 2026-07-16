@@ -129,6 +129,53 @@ def _team_map() -> dict[str, str]:
     return out
 
 
+def _event_map() -> dict[str, str]:
+    """Lowercased event signature/topic -> name, for enabled entries only."""
+    out: dict[str, str] = {}
+    for e in LAUNCHPADS:
+        if not e.get("enabled"):
+            continue
+        for sig in e.get("event_signatures") or []:
+            out[normalize(sig)] = e["name"]
+    return out
+
+
+def has_enabled_launchpads() -> bool:
+    """True if any enabled launchpad entry exists.
+
+    The orchestrator gates its creation-tx / log fetches on this: with the
+    production registry empty, no extra network calls fire and behavior is
+    unchanged — the on-chain matching activates only once sourced entries exist.
+    """
+    return any(e.get("enabled") for e in LAUNCHPADS)
+
+
+def match_creation_evidence(
+    factory_to: str | None,
+    log_topics: list[str] | None,
+) -> tuple[str, str, str] | None:
+    """Match a token's contract-creation evidence against the registry.
+
+    - HIGH: the creation tx's `to` (factory) is a verified factory address.
+    - MEDIUM: a creation log carries a verified factory event signature.
+
+    Returns (name, confidence, detail) or None when there is no evidence. This is
+    the M9 fetch-dependent path; the creator/name heuristics stay in detect_launchpad.
+    """
+    factory = _factory_map().get(normalize(factory_to)) if factory_to else None
+    if factory:
+        return factory, "high", f"Created by verified {factory} factory (creation-tx to-address match)."
+
+    if log_topics:
+        emap = _event_map()
+        for topic in log_topics:
+            name = emap.get(normalize(topic))
+            if name:
+                return name, "medium", f"Creation logs emit a verified {name} factory event."
+
+    return None
+
+
 def detect_launchpad(creator_address: str | None, contract_name: str | None, tags: list[str] | None = None) -> tuple[str, str, str | None]:
     """Return (name, confidence, detail). Registry-driven, security-first.
 

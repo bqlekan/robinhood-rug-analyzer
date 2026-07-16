@@ -115,6 +115,34 @@ async def get_transaction_timestamp(tx_hash: str) -> str | None:
     return await cached_call(_static_cache, f"tx_timestamp:{tx_hash.lower()}", fetch)
 
 
+async def get_transaction(tx_hash: str) -> dict[str, Any] | None:
+    """Full transaction payload (used for creation-tx factory detection via its `to`).
+
+    Cached: a mined transaction is immutable within the TTL. None on any failure.
+    """
+    async def fetch() -> dict[str, Any] | None:
+        return await _get(get_client(), f"/transactions/{tx_hash}")
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_static_cache, f"tx:{tx_hash.lower()}", fetch)
+
+
+async def get_transaction_logs(tx_hash: str) -> list[dict[str, Any]]:
+    """Event logs emitted by a transaction (used for launchpad event-signature matching).
+
+    Cached: a mined transaction's logs are immutable within the TTL. Empty list on failure.
+    """
+    async def fetch() -> list[dict[str, Any]]:
+        payload = await _get(get_client(), f"/transactions/{tx_hash}/logs")
+        items = (payload or {}).get("items") or []
+        return items if isinstance(items, list) else []
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_static_cache, f"tx_logs:{tx_hash.lower()}", fetch)
+
+
 async def get_token_transfers(address: str, pages: int = 1) -> list[dict[str, Any]]:
     """Chronological-ish token transfers for a token (newest first per page).
 

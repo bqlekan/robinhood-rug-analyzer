@@ -290,7 +290,28 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         tags = tags + [ctr_intel.template]
     if ctr_intel and ctr_intel.protocol:
         tags = tags + [ctr_intel.protocol]
-    launchpad = analyzers.analyze_launchpad(creator, contract_name, tags)
+
+    # M9: on-chain creation evidence (verified factory `to` = HIGH, verified factory
+    # event = MEDIUM). Gated on a non-empty registry so no extra fetches fire in
+    # production (empty registry) — the machinery activates only with sourced entries.
+    creation_factory: str | None = None
+    creation_log_topics: list[str] | None = None
+    if creation_tx and launchpad_registry.has_enabled_launchpads():
+        creation_tx_data, creation_logs = await asyncio.gather(
+            blockscout_client.get_transaction(creation_tx),
+            blockscout_client.get_transaction_logs(creation_tx),
+        )
+        creation_factory = ((creation_tx_data or {}).get("to") or {}).get("hash")
+        creation_log_topics = [
+            t for log in creation_logs for t in (log.get("topics") or []) if t
+        ]
+    launchpad = analyzers.analyze_launchpad(
+        creator,
+        contract_name,
+        tags,
+        creation_factory=creation_factory,
+        creation_log_topics=creation_log_topics,
+    )
 
     # Lore.
     lore: TokenLore | None = None
