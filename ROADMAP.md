@@ -50,7 +50,7 @@ and scan tiering must land before the request-heavy detection work.
 
 ---
 
-### M1 — HTTP response caching (TTL)
+### M1 — HTTP response caching (TTL) ✅ COMPLETE
 
 - **Goal:** Cache near-static external reads (token info, verified source, deployer history,
   DexScreener pairs) behind a small TTL layer.
@@ -69,12 +69,16 @@ and scan tiering must land before the request-heavy detection work.
   - Cache never turns a failed fetch into a poisoned success.
 - **Suggested tests:** cache hit/miss within/after TTL; error responses not cached;
   bounded-size eviction.
+- **As built:** `app/services/cache.py` (`TTLCache` + `cached_call`), 300s TTL, config
+  knobs in `config.py`. Cached ONLY `get_smart_contract` and `get_address_info`
+  (immutable source + creation facts). Token info, DexScreener pairs, holders, and
+  transfers are deliberately NOT cached — they feed live market/holder scoring signals.
 
 **Blocker to solve first:** none — do this first.
 
 ---
 
-### M2 — Scan tiering / lightweight pre-scan
+### M2 — Scan tiering / lightweight pre-scan ✅ COMPLETE
 
 - **Goal:** A cheap first-pass scorer (age + liquidity + concentration from data already
   fetched) that ranks all candidates, escalating to full analysis only on demand / top-N.
@@ -95,6 +99,13 @@ and scan tiering must land before the request-heavy detection work.
   `/analyze` output byte-identical to pre-change.
 
 **Blocker to solve first:** M1, so escalated deep analyses hit warm cache.
+
+- **As built:** light tier uses only `holders_count` from `list_tokens` (no extra requests).
+  Promote-on-uncertainty: a token is skipped only when confidently safe (known holder count
+  ≥ `scan_established_holder_floor` AND light score < `scan_light_promote_threshold`);
+  everything else escalates. `asyncio.Semaphore` bounds concurrent deep analyses.
+  `score_token_light` in `scoring.py`; policy in `scan_and_rank`. Tests in
+  `tests/test_scan_tiering.py`.
 
 ### M3 — Real token age from contract creation
 
