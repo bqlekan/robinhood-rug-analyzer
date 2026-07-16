@@ -6,12 +6,22 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.services.cache import TTLCache, cached_call
 from app.services.http import get_client
 
 logger = logging.getLogger(__name__)
 
 # Free, keyless public Blockscout REST API v2 for Robinhood Chain (chain id 4663).
 API_V2 = f"{settings.blockscout_base_url}/api/v2"
+
+# Cache ONLY near-static reads: verified contract source and contract creation
+# facts (creator/creation tx). Both are immutable for a deployed contract.
+# Holder metrics, transfers, token counters, and market data are deliberately
+# NOT cached so scoring always sees live data.
+_static_cache = TTLCache(
+    ttl=settings.http_cache_ttl_seconds,
+    max_size=settings.http_cache_max_size,
+)
 
 
 async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any] | None = None) -> Any | None:
@@ -51,8 +61,16 @@ async def get_token_holders(address: str, limit: int | None = None) -> list[dict
 
 
 async def get_address_info(address: str) -> dict[str, Any] | None:
-    """Address details including creator_address_hash and creation_transaction_hash for contracts."""
-    return await _get(get_client(), f"/addresses/{address}")
+    """Address details including creator_address_hash and creation_transaction_hash for contracts.
+
+    Cached: only immutable creation facts are read from this payload downstream.
+    """
+    async def fetch() -> dict[str, Any] | None:
+        return await _get(get_client(), f"/addresses/{address}")
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_static_cache, f"address_info:{address.lower()}", fetch)
 
 
 async def get_address_token_transfers(address: str) -> list[dict[str, Any]]:
@@ -70,8 +88,16 @@ async def get_address_transactions(address: str) -> list[dict[str, Any]]:
 
 
 async def get_smart_contract(address: str) -> dict[str, Any] | None:
-    """Verified contract source + metadata (name, compiler, abi, source, imports)."""
-    return await _get(get_client(), f"/smart-contracts/{address}")
+    """Verified contract source + metadata (name, compiler, abi, source, imports).
+
+    Cached: a deployed contract's verified source is immutable within the TTL.
+    """
+    async def fetch() -> dict[str, Any] | None:
+        return await _get(get_client(), f"/smart-contracts/{address}")
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_static_cache, f"smart_contract:{address.lower()}", fetch)
 
 
 async def get_token_transfers(address: str, pages: int = 1) -> list[dict[str, Any]]:

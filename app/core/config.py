@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     # pool caps the whole nested scan fan-out (token loop -> funder traces -> creator
     # scans) so a scan cannot exhaust the free Blockscout rate budget.
     http_max_connections: int = 20
+    # --- HTTP response cache (near-static reads only) ---
+    # Caches immutable/near-static external reads (verified contract source,
+    # contract creation facts). Market data, holder metrics, and transfers are
+    # never cached so scoring always sees live data.
+    http_cache_enabled: bool = True
+    http_cache_ttl_seconds: float = 300.0
+    http_cache_max_size: int = 512
     # Cap how many tokens the ranked scanner analyzes per request so a single
     # scan cannot exhaust the free Blockscout rate budget.
     scan_max_tokens: int = 15
