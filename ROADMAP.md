@@ -258,6 +258,13 @@ and scan tiering must land before the request-heavy detection work.
 - **Suggested tests:** exact-match detection for seeded addresses; unknowns still degrade
   gracefully.
 
+> **Deferred from the M8 build (structure shipped; these need fetch/RPC, so they land later):**
+> creation-transaction launchpad detection → **M9**; event-log launchpad detection → **M9**;
+> confidence upgrade from event evidence (the MEDIUM tier) → **M9**; LP owner verification,
+> LP burn detection, LP locker verification, and lock-expiry detection → **M13**; bundling
+> detection → **M14**; same-block / sniper analysis → **M15**. The registry schema now carries
+> an `event_signatures` field reserved for the M9 MEDIUM tier.
+
 ### M9 — RPC layer (shared, bounded) — foundation for behavior analysis
 
 - **Goal:** Add a JSON-RPC client using the configured (currently unused) `rpc_url`, sharing
@@ -276,6 +283,15 @@ and scan tiering must land before the request-heavy detection work.
     Blockscout client.
 - **Suggested tests:** encode/decode helpers pure-tested; client returns `None` on RPC error
   without raising.
+- **Deferred from M8 (registry-driven launchpad detection) — implement here:** M8 built the
+  registry + exact-match logic but left the fetch-dependent detection steps for this layer:
+  - **Creation-transaction launchpad detection** — fetch a token's contract-creation tx and
+    compare its `to`/factory against the registry (the address-fetch M8 could not do).
+  - **Event-log launchpad detection** — parse known factory event signatures
+    (`event_signatures` in the registry schema) from creation/receipt logs.
+  - **Confidence upgrade from event evidence** — a verified factory *event* match resolves to
+    `MEDIUM` (the tier M8 explicitly reserved; today only factory-address=HIGH and
+    heuristics=LOW exist).
 
 **Blocker to solve first:** probe the public RPC (`https://rpc.mainnet.chain.robinhood.com`)
 for `eth_call` support and rate limits before committing — a flaky/limited RPC pushes M9–M11
@@ -346,6 +362,13 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   timestamp*, turning the binary lock signal into a time-aware one.
 - **Why it matters:** A lock unlocking tomorrow is nearly as dangerous as no lock. Presence
   alone gives false confidence.
+- **Deferred here from the M8 proposal (security-first liquidity states):** replace the current
+  binary locked/unlocked verdict with distinct, evidence-gated states —
+  **LP owner verification** (who owns the LP tokens / LP-NFT), **LP burn detection** (LP sent to
+  a burn address → *Verified Burned*), **LP locker verification** (LP held by a registry-verified
+  locker → *Verified Locked*), and **lock-expiry detection** (read the locker's unlock timestamp).
+  A platform that normally auto-locks but is not yet confirmed must report *Expected Locked*, never
+  a confident *locked*. When evidence is incomplete, return *Unknown* — never a false-safe verdict.
 - **Files/modules:** `analyzers.py` (`analyze_liquidity_lock`), `launchpad_registry.py`
   (locker ABIs), `scoring.py`, new RPC reads.
 - **Dependencies:** M9 (RPC), M8 (populated locker registry).
@@ -372,6 +395,13 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   signal; hop depth bounded/configurable.
 - **Suggested tests:** multi-hop union (mocked); bundler fixture flagged.
 
+> **Deferred from the M8 proposal — bundling detection lands here:** the requested
+> "bundle score (0–100)" with Normal/Moderate/Heavy/Extreme classes and its signals
+> (repeated funding wallet, concentration in <5 wallets, clustered wallets, creator
+> participation, percentage concentration) belong to M14. It must be **additive
+> metadata**, not a replacement for existing scoring. The same-block/first-seconds
+> and sniper-timing portion of that proposal is M15 (below).
+
 ---
 
 ### M15 — Same-block / coordinated-buy timing detection
@@ -386,6 +416,11 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 - **Expected improvement:** Detection Δ: Med–High.
 - **Acceptance criteria:** same-block cohort detected and scored; single-buyer tokens unaffected.
 - **Suggested tests:** same-timestamp/block cohort fixture → cluster signal (pure).
+
+> **Deferred from the M8 proposal — same-block/sniper analysis lands here:** the
+> "first 20–50 buys," same-block buys, and buys-within-first-seconds portions of the
+> proposed bundling workflow belong to M15. Bundle *scoring/classification* is M14;
+> this milestone supplies the timing signals that feed it. Additive metadata only.
 
 ### M16 — Smart-wallet cross-token implementation (activate the dead path)
 
