@@ -209,7 +209,13 @@ and scan tiering must land before the request-heavy detection work.
 
 ---
 
-### M7 — Confidence / data-completeness scoring
+### M7 — Confidence / data-completeness scoring ✅ COMPLETE
+
+> **As built:** `RugAnalysis` gains `confidence` (0–100) + `confidence_level`
+> (low/medium/high), computed in `scoring.py` from which core inputs were present
+> (market, holders, age, dev, liquidity_lock). Additive metadata only — does not
+> affect `risk_score`/`risk_level`. `score_token_light` reports low confidence
+> honestly. UI shows a "Data Confidence" card, escaped. Tests in `tests/test_scoring.py`.
 
 - **Goal:** Surface a confidence indicator alongside the risk score reflecting which inputs
   were available (holders, source, pair, transfers).

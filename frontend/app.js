@@ -256,6 +256,7 @@ function renderAnalysis(data) {
     <section class="analysis-summary" style="border-left: 5px solid ${color}">
       ${card("Risk Score", `${a.risk_score}/100`)}
       ${card("Risk Level", esc(a.risk_level.toUpperCase()))}
+      ${a.confidence != null ? card("Data Confidence", `${esc(a.confidence)}%`, esc((a.confidence_level || "").toUpperCase())) : ""}
       ${card("Token", `${esc(m?.base_token_name || "Unknown")} (${esc(m?.base_token_symbol || "N/A")})`)}
       ${card("Age", fmtAge(data.token_age?.age_days, data.token_age?.age_hours))}
     </section>

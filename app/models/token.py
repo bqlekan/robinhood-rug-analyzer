@@ -281,6 +281,11 @@ class RugAnalysis(BaseModel):
     signals: list[RiskSignal]
     data_sources: list[str]
     limitations: list[str]
+    # Data-completeness confidence in [0,100]: how much of the analysis was backed
+    # by real data. A low risk_score with low confidence means "couldn't see much",
+    # not "confirmed safe". Additive metadata only — does not affect risk_score.
+    confidence: int = 100
+    confidence_level: str = "high"  # low | medium | high
 
 
 class TokenAnalysisResponse(BaseModel):

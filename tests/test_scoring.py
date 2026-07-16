@@ -105,3 +105,54 @@ def test_signals_have_categories_and_points():
         assert signal.points > 0
         assert signal.category
         assert signal.severity in {"low", "medium", "high", "critical"}
+
+
+def test_confidence_high_with_full_data():
+    # M7: every core input present -> high confidence, independent of risk_score.
+    analysis = score_token(
+        age=TokenAge(age_hours=2400, age_days=100, source="pair_created_at"),
+        market=_healthy_market(),
+        holders=HolderDistribution(holder_count=5000, top10_percentage=25, top1_percentage=5),
+        clusters=ClusterAnalysis(clusters=[], clustered_percentage=0),
+        dev=DevProfile(creator_address="0xdev", reputation="clean"),
+        liquidity_lock=LiquidityLock(status="locked", locked_percentage=100),
+        launchpad=LaunchpadInfo(name="NOXA Fun", confidence="high"),
+        lore=None,
+        data_sources=["test"],
+    )
+    assert analysis.confidence == 100
+    assert analysis.confidence_level == "high"
+
+
+def test_confidence_low_when_sources_missing():
+    # M7: nothing available -> low confidence, so a low risk_score is not read as "safe".
+    analysis = score_token(
+        age=TokenAge(age_hours=None, age_days=None, source=None),
+        market=None,
+        holders=None,
+        clusters=None,
+        dev=None,
+        liquidity_lock=None,
+        launchpad=None,
+        lore=None,
+        data_sources=["test"],
+    )
+    assert analysis.confidence < 40
+    assert analysis.confidence_level == "low"
+
+
+def test_confidence_does_not_affect_risk_score():
+    # M7: confidence is additive metadata; the clean-token risk assertions still hold.
+    analysis = score_token(
+        age=TokenAge(age_hours=2400, age_days=100, source="pair_created_at"),
+        market=_healthy_market(),
+        holders=HolderDistribution(holder_count=5000, top10_percentage=25, top1_percentage=5),
+        clusters=ClusterAnalysis(clusters=[], clustered_percentage=0),
+        dev=DevProfile(dev_holding_percentage=1, reputation="clean"),
+        liquidity_lock=LiquidityLock(status="locked", locked_percentage=100),
+        launchpad=LaunchpadInfo(name="NOXA Fun", confidence="high"),
+        lore=None,
+        data_sources=["test"],
+    )
+    assert analysis.risk_level == "low"
+    assert analysis.risk_score < 25

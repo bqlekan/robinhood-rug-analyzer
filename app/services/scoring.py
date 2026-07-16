@@ -41,6 +41,37 @@ def _score_level(score: int) -> str:
     return "low"
 
 
+# Weighted contribution of each core input to overall confidence. A low score with
+# missing inputs means "couldn't see," not "safe" — this lets the UI say which.
+_CONFIDENCE_WEIGHTS = {
+    "market": 30,
+    "holders": 30,
+    "age": 15,
+    "dev": 15,
+    "liquidity_lock": 10,
+}
+
+
+def _confidence_level(pct: int) -> str:
+    if pct >= 75:
+        return "high"
+    if pct >= 40:
+        return "medium"
+    return "low"
+
+
+def _confidence(present: dict[str, bool]) -> tuple[int, str]:
+    """0-100 data-completeness score from which core inputs were available.
+
+    Independent of risk: it reflects how much the analysis could actually see,
+    so a low risk_score backed by thin data is distinguishable from a clean read.
+    """
+    total = sum(_CONFIDENCE_WEIGHTS.values())
+    got = sum(w for key, w in _CONFIDENCE_WEIGHTS.items() if present.get(key))
+    pct = round(got / total * 100) if total else 0
+    return pct, _confidence_level(pct)
+
+
 def score_token(
     *,
     age: TokenAge | None,
@@ -139,9 +170,21 @@ def score_token(
         _sig(signals, "Negative social sentiment", "lore", "medium", 10, "Public discussion around this token skews negative (scam/rug mentions).")
 
     score = min(sum(s.points for s in signals), 100)
+    confidence, confidence_level = _confidence(
+        {
+            "market": market is not None,
+            # holder_count present means the holders dimension had real data.
+            "holders": bool(holders and holders.holder_count is not None),
+            "age": bool(age and age.age_hours is not None),
+            "dev": bool(dev and dev.creator_address),
+            "liquidity_lock": bool(liquidity_lock and liquidity_lock.status != "unknown"),
+        }
+    )
     return RugAnalysis(
         risk_score=score,
         risk_level=_score_level(score),
+        confidence=confidence,
+        confidence_level=confidence_level,
         signals=signals,
         data_sources=data_sources,
         limitations=LIMITATIONS,
@@ -164,9 +207,14 @@ def score_token_light(holder_count: int | None) -> RugAnalysis:
         _sig(signals, "Low holder count", "holders", "medium", 8, f"{holder_count} holders is still concentrated.")
 
     score = min(sum(s.points for s in signals), 100)
+    # A light pre-screen saw only holder count from the token list, so confidence
+    # is intentionally low — a low light score is "not yet examined", not "safe".
+    confidence, confidence_level = _confidence({"holders": holder_count is not None})
     return RugAnalysis(
         risk_score=score,
         risk_level=_score_level(score),
+        confidence=confidence,
+        confidence_level=confidence_level,
         signals=signals,
         data_sources=["Blockscout token list (light pre-screen)"],
         limitations=LIMITATIONS,
