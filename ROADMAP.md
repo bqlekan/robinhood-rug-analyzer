@@ -187,7 +187,13 @@ and scan tiering must land before the request-heavy detection work.
 
 ---
 
-### M6 — Signal semantics: distinguish "smart hold" from "dump"
+### M6 — Signal semantics: distinguish "smart hold" from "dump" ✅ COMPLETE
+
+> **As built:** in `smart_wallet_proxy` the +30 signal now credits HOLDING (sent
+> <50% of received) as smart and flags dumping (≥50%) as exit risk with no smart
+> credit. Scoring hookup deliberately deferred to M10 — the proxy is inert in
+> production (max 65 < threshold 70), so deep-analysis output is unchanged; this is
+> a correctness fix for when M10 activates it. Tests in `tests/test_wallet_intel.py`.
 
 - **Goal:** Split the +30 "distributed after accumulating" signal into "early + still holding"
   (smart) vs "early + dumped" (exit/insider risk).

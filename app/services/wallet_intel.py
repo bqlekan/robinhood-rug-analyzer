@@ -135,7 +135,8 @@ def smart_wallet_proxy(
 
     This is NOT a verified ROI. Signals (each additive, capped at 100):
       - Entered early relative to the token's transfer history.
-      - Reduced position into later activity (distributed after accumulating).
+      - Held most of its position after entering (dumping >=50% is flagged as exit
+        risk instead and earns no smart credit).
       - Holds/held multiple surviving tokens (passed in from cross-token context).
     """
     addr = address.lower()
@@ -157,12 +158,18 @@ def smart_wallet_proxy(
                 score += 35
                 signals.append("Entered among the earliest holders")
 
-    if received and sent:
+    if received:
         got = sum(r["value"] or 0 for r in received)
         gave = sum(r["value"] or 0 for r in sent)
-        if got > 0 and gave >= got * 0.5:
-            score += 30
-            signals.append("Distributed a meaningful share after accumulating")
+        # M6: reward HOLDING, not dumping. A wallet that entered and kept most of
+        # its position is "smart"; one that offloaded >=50% is exit/insider risk and
+        # earns no smart credit (only a flag). The old code rewarded the dump case.
+        if got > 0:
+            if gave < got * 0.5:
+                score += 30
+                signals.append("Held most of its position after entering")
+            else:
+                signals.append("Dumped >=50% of its position after entering (exit risk, not smart)")
 
     if surviving_tokens and surviving_tokens >= 2:
         score += min(35, 15 + 10 * surviving_tokens)

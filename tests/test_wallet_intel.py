@@ -93,19 +93,40 @@ def test_detect_insiders_none_known_contracts_is_backward_compatible():
     assert {i.address for i in insiders} == {"0xearly1"}
 
 
-def test_smart_wallet_proxy_rewards_early_entry_and_distribution():
-    # 0xsmart is the first recipient and later distributes most of its position.
+def test_smart_wallet_proxy_rewards_early_entry_and_holding():
+    # M6: 0xsmart enters early and KEEPS most of its position (sent < 50%) -> smart.
     transfers = [
         {"from": wallet_intel.ZERO, "to": "0xsmart", "value": 100, "ts": "t1", "method": "mint"},
         {"from": wallet_intel.ZERO, "to": "0xb", "value": 50, "ts": "t2", "method": "transfer"},
         {"from": wallet_intel.ZERO, "to": "0xc", "value": 50, "ts": "t3", "method": "transfer"},
-        {"from": "0xsmart", "to": "0xbuyer", "value": 80, "ts": "t4", "method": "transfer"},
+        {"from": "0xsmart", "to": "0xbuyer", "value": 20, "ts": "t4", "method": "transfer"},
     ]
     sw = wallet_intel.smart_wallet_proxy("0xsmart", transfers, surviving_tokens=3)
     assert sw.proxy_score > 0
     assert any("earliest" in s.lower() for s in sw.signals)
-    assert any("distributed" in s.lower() for s in sw.signals)
+    assert any("held most" in s.lower() for s in sw.signals)
     assert sw.surviving_tokens == 3
+
+
+def test_smart_wallet_proxy_flags_dump_and_denies_smart_credit():
+    # M6: an early wallet that DUMPS >=50% is exit risk, not smart. It gets the
+    # early-entry credit but NOT the hold credit, and carries an exit-risk flag.
+    dumper = [
+        {"from": wallet_intel.ZERO, "to": "0xdumper", "value": 100, "ts": "t1", "method": "mint"},
+        {"from": "0xdumper", "to": "0xbuyer", "value": 80, "ts": "t2", "method": "transfer"},
+    ]
+    holder = [
+        {"from": wallet_intel.ZERO, "to": "0xholder", "value": 100, "ts": "t1", "method": "mint"},
+        {"from": "0xholder", "to": "0xbuyer", "value": 20, "ts": "t2", "method": "transfer"},
+    ]
+    sw_dump = wallet_intel.smart_wallet_proxy("0xdumper", dumper)
+    sw_hold = wallet_intel.smart_wallet_proxy("0xholder", holder)
+    # Dumper: no "held" credit, has an exit-risk flag; holder: has "held" credit.
+    assert not any("held most" in s.lower() for s in sw_dump.signals)
+    assert any("exit risk" in s.lower() for s in sw_dump.signals)
+    assert any("held most" in s.lower() for s in sw_hold.signals)
+    # Holding is scored strictly higher than dumping for the same early entry.
+    assert sw_hold.proxy_score > sw_dump.proxy_score
 
 
 def test_smart_wallet_proxy_is_capped_at_100():
