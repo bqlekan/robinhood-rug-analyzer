@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     # How many top holders to pull for distribution + cluster analysis.
     holder_sample_size: int = 50
 
+    # --- Scan tiering (M2) ---
+    # A cheap pre-screen ranks candidates using ONLY list_tokens metadata (no extra
+    # requests), promoting anything not confidently low-risk into full deep analysis.
+    scan_tiering_enabled: bool = True
+    # Light score at/above which a token is promoted to deep analysis. Lower =
+    # more tokens promoted (safer, more requests); higher = more skipped.
+    scan_light_promote_threshold: int = 25
+    # A token needs at least this many holders to be considered confidently
+    # low-risk on the cheap signal alone; fewer (or unknown) -> promote.
+    scan_established_holder_floor: int = 500
+    # Max concurrent deep analyses in flight during a scan (bounds fan-out).
+    scan_max_deep_analyses: int = 5
+
     # --- Wallet intelligence ---
     # How many of a token's earliest buyers to treat as candidate insiders.
     insider_early_buyer_count: int = 15

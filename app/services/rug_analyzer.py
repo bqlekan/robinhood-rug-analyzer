@@ -20,7 +20,7 @@ from app.services import analyzers, blockscout_client, contract_intel, launchpad
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
-from app.services.scoring import LIMITATIONS, score_token
+from app.services.scoring import LIMITATIONS, score_token, score_token_light
 
 logger = logging.getLogger(__name__)
 
@@ -350,15 +350,16 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             limitations=LIMITATIONS,
         )
 
-    async def analyze_one(token: dict) -> RankedToken | None:
-        address = token.get("address_hash")
-        if not address:
-            return None
-        try:
-            result = await analyze_token_contract(address, include_lore=include_lore)
-        except Exception as exc:  # keep the scan resilient to a single bad token
-            logger.warning("Scan: analysis failed for %s: %s", address, exc)
-            return None
+    # Bound concurrent deep analyses so escalation cannot exhaust the API budget.
+    deep_sem = asyncio.Semaphore(max(1, settings.scan_max_deep_analyses))
+
+    async def deep_one(token: dict, address: str) -> RankedToken | None:
+        async with deep_sem:
+            try:
+                result = await analyze_token_contract(address, include_lore=include_lore)
+            except Exception as exc:  # keep the scan resilient to a single bad token
+                logger.warning("Scan: analysis failed for %s: %s", address, exc)
+                return None
         top_signal = max(result.analysis.signals, key=lambda s: s.points).name if result.analysis.signals else None
         return RankedToken(
             contract_address=address,
@@ -375,7 +376,41 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             flagged_by=result.watchlist_hits,
         )
 
-    results = await asyncio.gather(*(analyze_one(t) for t in tokens))
+    def _light_ranked(token: dict, address: str, light) -> RankedToken:
+        """Lightweight result for a token the pre-screen skipped (no deep fetches)."""
+        return RankedToken(
+            contract_address=address,
+            name=token.get("name"),
+            symbol=token.get("symbol"),
+            risk_score=light.risk_score,
+            risk_level=light.risk_level,
+            holder_count=to_int(token.get("holders_count") or token.get("holders")),
+            top_signal="Deep analysis skipped: low-risk on cheap pre-screen (high holder count).",
+        )
+
+    async def scan_one(token: dict) -> RankedToken | None:
+        address = token.get("address_hash")
+        if not address:
+            return None
+        if not settings.scan_tiering_enabled:
+            return await deep_one(token, address)
+        # Light tier: holder count from list_tokens only — no extra requests.
+        holder_count = to_int(token.get("holders_count") or token.get("holders"))
+        light = score_token_light(holder_count)
+        # Promote on uncertainty. A token is skipped ONLY when it is confidently
+        # low-risk: a KNOWN holder count at/above the floor AND a light score below
+        # threshold. Unknown holder count, too few holders, or any light-score hit
+        # all promote to deep analysis — so nothing suspicious is ever skipped.
+        confidently_safe = (
+            holder_count is not None
+            and holder_count >= settings.scan_established_holder_floor
+            and light.risk_score < settings.scan_light_promote_threshold
+        )
+        if not confidently_safe:
+            return await deep_one(token, address)
+        return _light_ranked(token, address, light)
+
+    results = await asyncio.gather(*(scan_one(t) for t in tokens))
     ranked = [r for r in results if r is not None]
     ranked.sort(key=lambda r: r.risk_score, reverse=True)
 
