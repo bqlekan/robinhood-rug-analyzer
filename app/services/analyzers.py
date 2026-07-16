@@ -210,11 +210,11 @@ def analyze_clusters(
         members_set.add(holder.lower())
 
     uf = _UnionFind()
-    link_types: dict[str, set[str]] = {}
-    funder_of: dict[str, str] = {}
-
-    def _member_key(root: str) -> str:
-        return root
+    # Record links per NODE (stable keys), not per root: a later union can change a
+    # component's root, which would orphan any root-keyed entry. Resolve to the final
+    # root only at collection time, after all unions are done.
+    node_link_types: dict[str, set[str]] = {}
+    node_funder: dict[str, str] = {}
 
     for funder, members in funder_groups.items():
         if len(members) < 2:
@@ -223,8 +223,8 @@ def analyze_clusters(
         for m in members[1:]:
             uf.union(first, m)
         for m in members:
-            funder_of[uf.find(m)] = funder
-            link_types.setdefault(uf.find(m), set()).add("shared_funder")
+            node_funder[m] = funder
+            node_link_types.setdefault(m, set()).add("shared_funder")
 
     # 2) mutual-transfer links (holder A sent the token to holder B, both sampled)
     holder_pool = set(pct_by_addr)
@@ -233,19 +233,30 @@ def analyze_clusters(
         if a in holder_pool and b in holder_pool and a != b:
             uf.union(a, b)
             members_set.update({a, b})
-            link_types.setdefault(uf.find(a), set()).add("mutual_transfer")
+            node_link_types.setdefault(a, set()).add("mutual_transfer")
+            node_link_types.setdefault(b, set()).add("mutual_transfer")
 
-    # Collect components with >= 2 members.
+    # Collect components with >= 2 members, aggregating the per-node link types and
+    # funders up to each component's FINAL root (so a post-union root change can't
+    # drop a real cluster).
     comps: dict[str, list[str]] = {}
+    root_types: dict[str, set[str]] = {}
+    root_funder: dict[str, str] = {}
     for node in members_set:
-        comps.setdefault(uf.find(node), []).append(node)
+        root = uf.find(node)
+        comps.setdefault(root, []).append(node)
+        types = node_link_types.get(node)
+        if types:
+            root_types.setdefault(root, set()).update(types)
+        funder = node_funder.get(node)
+        if funder and root not in root_funder:
+            root_funder[root] = funder
 
     clusters: list[HolderCluster] = []
     clustered_pct = 0.0
     for root, members in comps.items():
-        # Only keep components actually linked by a signal (root present in link_types
-        # or funder groups), with 2+ members.
-        types = link_types.get(root, set())
+        # Only keep components actually linked by a signal, with 2+ members.
+        types = root_types.get(root, set())
         if len(members) < 2 or not types:
             continue
         combined = round(sum(pct_by_addr.get(m) or 0.0 for m in members), 4)
@@ -253,7 +264,7 @@ def analyze_clusters(
         link_type = "mixed" if len(types) > 1 else next(iter(types))
         clusters.append(
             HolderCluster(
-                funder_address=funder_of.get(root),
+                funder_address=root_funder.get(root),
                 member_addresses=sorted(members),
                 combined_percentage=combined,
                 link_type=link_type,

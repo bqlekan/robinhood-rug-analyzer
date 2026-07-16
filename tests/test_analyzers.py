@@ -156,6 +156,23 @@ def test_analyze_clusters_mixed_link_when_funder_and_transfer_overlap():
     assert result.clusters[0].link_type == "mixed"
 
 
+def test_analyze_clusters_retains_link_type_after_root_change():
+    # M5 regression: a shared-funder pair (A,B) whose component root is later moved
+    # by a mutual transfer to a third holder C. Before re-keying, the shared_funder
+    # link type and funder attribution sat on the OLD root and were lost at the new
+    # root, mislabeling the cluster "mutual_transfer" with no funder. After the fix
+    # both link types survive (-> "mixed") and the funder is retained.
+    funders = {"0xA": "0xF1", "0xB": "0xF1", "0xC": None}
+    pcts = {"0xA": 5.0, "0xB": 5.0, "0xC": 5.0}
+    result = analyzers.analyze_clusters(funders, pcts, mutual_transfers=[("0xB", "0xC")])
+    assert len(result.clusters) == 1
+    cluster = result.clusters[0]
+    assert set(cluster.member_addresses) == {"0xa", "0xb", "0xc"}
+    assert cluster.link_type == "mixed"
+    assert cluster.funder_address == "0xf1"
+    assert cluster.combined_percentage == 15.0
+
+
 def test_extract_mutual_transfers_only_between_sampled_holders():
     transfers = [
         {"from": "0xa", "to": "0xb", "value": 1.0},

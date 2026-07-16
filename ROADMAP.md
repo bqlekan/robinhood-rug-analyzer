@@ -161,7 +161,14 @@ and scan tiering must land before the request-heavy detection work.
 
 ---
 
-### M5 — Union-find cluster link-type re-keying
+### M5 — Union-find cluster link-type re-keying ✅ COMPLETE
+
+> **As built:** `analyze_clusters` now records link types and funder attribution
+> per-node (stable keys) and aggregates them to each component's final root at
+> collection time, so a later mutual-transfer union that changes the root can no
+> longer orphan a shared-funder link. Dead `_member_key` removed. Regression test
+> `test_analyze_clusters_retains_link_type_after_root_change` in `tests/test_analyzers.py`.
+
 
 - **Goal:** Re-key `link_types`/`funder_of` after all unions complete so clusters aren't
   dropped when a later mutual-transfer union changes a component root.
