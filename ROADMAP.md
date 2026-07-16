@@ -231,7 +231,18 @@ and scan tiering must land before the request-heavy detection work.
 
 ---
 
-### M8 — Registry population (launchpads, lockers, infra)
+### M8 — Registry population (launchpads, lockers, infra) ✅ COMPLETE
+
+> **As built:** `launchpad_registry.py` restructured into a documented, editable registry
+> schema — `LAUNCHPADS` (name, factory_address, team_addresses, event_signatures, source,
+> verified_date, enabled) and `LP_LOCKERS` (address, label, source, verified_date). Both
+> kept **EMPTY in production** by design: no addresses were fabricated or scraped for an
+> unverifiable new chain, so production detection still returns `Unknown` (no false-safe
+> verdicts). `detect_launchpad` is now registry-driven: verified factory → HIGH, verified
+> team wallet → LOW, name/tag substring → LOW (demoted from the old MEDIUM — a name is not
+> an address). Verified-event MEDIUM tier deferred to M9 (needs receipt/log reads). Burn
+> addresses stay chain-agnostic. Example addresses live in `tests/test_launchpad_registry.py`
+> only. Liquidity-state expansion deferred to M13; bundle/sniper scoring to M14/M15.
 
 - **Goal:** Populate `LAUNCHPAD_DEPLOYERS`, `LP_LOCKERS`, and known-infra addresses with
   confirmed Robinhood-Chain values.

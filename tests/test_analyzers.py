@@ -235,9 +235,11 @@ def test_analyze_liquidity_lock_unknown_without_holders():
 
 
 def test_launchpad_name_hint():
+    # A name substring is only a heuristic, so it yields LOW confidence (never medium):
+    # it must not outrank a verified factory address match.
     name, confidence, _ = launchpad_registry.detect_launchpad(None, "NOXA Fun Token", None)
     assert name == "NOXA Fun"
-    assert confidence == "medium"
+    assert confidence == "low"
 
 
 def test_launchpad_unknown():

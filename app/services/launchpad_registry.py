@@ -2,24 +2,44 @@ from __future__ import annotations
 
 """Registry mapping on-chain markers to known Robinhood Chain launchpads and LP lockers.
 
-Addresses on Robinhood Chain are still stabilizing, so this registry is intentionally
-data-driven and easy to extend. Detection uses two complementary signals:
+Registry-driven and easy to extend. Each launchpad entry is a documented record so
+detection can resolve an exact address match to a named platform with a confidence tier.
 
-1. Known deployer / factory addresses (exact match on the token creator).
-2. Name/tag heuristics from Blockscout address metadata and public tags.
+SECURITY: the production registry is intentionally EMPTY. Robinhood Chain (id 4663) is
+new; we do not have authoritatively-verified factory/locker addresses. A wrong locker
+entry would make `analyze_liquidity_lock` report a rug's liquidity as "locked" — the exact
+false-negative this tool exists to prevent. So we ship no unverified addresses: detection
+degrades to "Unknown" rather than making a confident, possibly-false claim. Populate ONLY
+from an authoritative source, filling `source` and `verified_date`, and set `enabled: True`.
+Example addresses appear in tests only, never here.
 
-All addresses are stored lowercased for case-insensitive matching.
+Entry schema (LAUNCHPADS):
+    name:            platform name shown to the user
+    factory_address: contract that deploys the platform's tokens (exact match -> HIGH)
+    team_addresses:  known deployer/team wallets (exact match -> LOW heuristic)
+    event_signatures: factory event topics (reserved for M9 receipt/log parsing -> MEDIUM)
+    source:          URL / citation the entry was verified from
+    verified_date:   ISO date the entry was confirmed
+    enabled:         only enabled entries participate in detection
+
+All addresses are compared lowercased.
 """
 
-# creator/factory address (lowercased) -> launchpad name.
-# Populate as launchpad factory addresses are confirmed on-chain.
-LAUNCHPAD_DEPLOYERS: dict[str, str] = {
-    # "0x...": "NOXA Fun",
-    # "0x...": "Bags",
-    # "0x...": "Pump.fun",
-}
+# Verified launchpad records. EMPTY in production by design (see module docstring).
+LAUNCHPADS: list[dict] = [
+    # {
+    #     "name": "Example Launch",
+    #     "factory_address": "0x...",
+    #     "team_addresses": ["0x..."],
+    #     "event_signatures": [],
+    #     "source": "https://authoritative-source/...",
+    #     "verified_date": "2026-01-01",
+    #     "enabled": True,
+    # },
+]
 
-# Substrings found in a contract's name/public tags that imply a launchpad origin.
+# Substrings in a contract's name/public tags that hint at a launchpad origin. This is a
+# heuristic (not an address claim), so a match yields LOW confidence only.
 LAUNCHPAD_NAME_HINTS: dict[str, str] = {
     "noxa": "NOXA Fun",
     "bags": "Bags",
@@ -29,17 +49,15 @@ LAUNCHPAD_NAME_HINTS: dict[str, str] = {
 }
 
 # Known burn / dead addresses that indicate LP tokens were destroyed (permanent lock).
+# Chain-agnostic and safe to hardcode.
 BURN_ADDRESSES: set[str] = {
     "0x0000000000000000000000000000000000000000",
     "0x000000000000000000000000000000000000dead",
 }
 
-# Known LP locker contracts. Populate with confirmed locker addresses on the chain.
-# label shown to the user when the LP is held by one of these.
-LP_LOCKERS: dict[str, str] = {
-    # "0x...": "UNCX",
-    # "0x...": "Team Finance",
-}
+# Verified LP locker records. EMPTY in production by design (see module docstring).
+#   {"address": "0x...", "label": "UNCX", "source": "...", "verified_date": "..."}
+LP_LOCKERS: list[dict] = []
 
 # Established assets (stablecoins, wrapped majors, blue chips) to exclude from the
 # rug scanner — the tool is meant to surface risk in newer creations, not to re-rank
@@ -91,25 +109,65 @@ def normalize(address: str | None) -> str:
     return (address or "").strip().lower()
 
 
-def detect_launchpad(creator_address: str | None, contract_name: str | None, tags: list[str] | None = None) -> tuple[str, str, str | None]:
-    """Return (name, confidence, detail).
+def _factory_map() -> dict[str, str]:
+    """Lowercased factory_address -> name, for enabled entries only."""
+    out: dict[str, str] = {}
+    for e in LAUNCHPADS:
+        if e.get("enabled") and e.get("factory_address"):
+            out[normalize(e["factory_address"])] = e["name"]
+    return out
 
-    confidence is "high" for an exact deployer match, "medium" for a name/tag hint,
-    and "low" when nothing matches.
+
+def _team_map() -> dict[str, str]:
+    """Lowercased team address -> name, for enabled entries only."""
+    out: dict[str, str] = {}
+    for e in LAUNCHPADS:
+        if not e.get("enabled"):
+            continue
+        for addr in e.get("team_addresses") or []:
+            out[normalize(addr)] = e["name"]
+    return out
+
+
+def detect_launchpad(creator_address: str | None, contract_name: str | None, tags: list[str] | None = None) -> tuple[str, str, str | None]:
+    """Return (name, confidence, detail). Registry-driven, security-first.
+
+    Priority (most to least authoritative):
+      HIGH   — creator matches a verified factory address.
+      LOW    — creator matches a verified launchpad team wallet (heuristic).
+      LOW    — contract name/tag references a known launchpad substring (heuristic).
+      UNKNOWN — no evidence. Never a confident claim without a verified address.
+
+    MEDIUM (verified factory *event* match) is reserved for M9, which adds the
+    receipt/log reads needed to parse factory events. Not attempted here.
     """
     creator = normalize(creator_address)
-    if creator and creator in LAUNCHPAD_DEPLOYERS:
-        name = LAUNCHPAD_DEPLOYERS[creator]
-        return name, "high", f"Deployed by known {name} factory/deployer."
+
+    if creator:
+        factory = _factory_map().get(creator)
+        if factory:
+            return factory, "high", f"Deployed by verified {factory} factory."
+        team = _team_map().get(creator)
+        if team:
+            return team, "low", f"Deployer matches a known {team} team wallet (heuristic)."
 
     haystack_parts = [contract_name or ""]
     haystack_parts.extend(tags or [])
     haystack = " ".join(haystack_parts).lower()
     for hint, name in LAUNCHPAD_NAME_HINTS.items():
         if hint in haystack:
-            return name, "medium", f"Contract metadata references '{hint}'."
+            return name, "low", f"Contract metadata references '{hint}' (name heuristic, not an address match)."
 
     return "Unknown", "low", "No known launchpad marker matched. May be a manual/custom deploy."
+
+
+def _locker_map() -> dict[str, str]:
+    """Lowercased locker address -> label, for enabled entries only."""
+    return {
+        normalize(e["address"]): e["label"]
+        for e in LP_LOCKERS
+        if e.get("enabled", True) and e.get("address")
+    }
 
 
 def locker_label(address: str | None) -> str | None:
@@ -117,7 +175,7 @@ def locker_label(address: str | None) -> str | None:
     addr = normalize(address)
     if addr in BURN_ADDRESSES:
         return "Burn address"
-    return LP_LOCKERS.get(addr)
+    return _locker_map().get(addr)
 
 
 def is_burn_address(address: str | None) -> bool:
