@@ -119,6 +119,28 @@ class Settings(BaseSettings):
     # Cap wallets refreshed per cycle to respect the free Blockscout rate budget.
     watchlist_refresh_batch: int = 25
 
+    # --- KOL Intelligence Engine (M23, Deliverable A: watchlist foundation) ---
+    # Master switch. Deliverable A only builds the watchlist + provider abstraction;
+    # no scraping/diffing/alerts run yet, so this gates future background work.
+    kol_intel_enabled: bool = False
+    # Separate sqlite DB from the wallet watchlist so the two stores stay decoupled
+    # and independently scalable (KOL data grows with snapshots later).
+    kol_db_path: str = "data/kol.db"
+    # Default platform assumed when a seed/entry omits one. Must be a platform the
+    # domain model knows (app/models/kol.SOCIAL_PLATFORMS); "x" is the first with a
+    # provider implementation.
+    kol_default_platform: str = "x"
+    # Config-driven watchlist. Editing this list (add/remove an entry, flip
+    # `enabled`, change `tier`) is the no-code way to manage who is watched;
+    # `kol_watchlist.sync_from_config()` reconciles these into the store on startup.
+    # Each item: {handle, platform?, display_name?, tier?, enabled?, notes?}.
+    kol_watchlist_seed: list[dict] = []
+    # When True, a config seed whose `enabled`/`tier`/`display_name`/`notes` differ
+    # from the stored row overwrites the stored values on sync (config is source of
+    # truth). When False, config only ever ADDS missing KOLs and never clobbers
+    # operator edits made via the API. Removal from config never auto-deletes.
+    kol_config_overwrites: bool = True
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""
