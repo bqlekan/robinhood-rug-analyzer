@@ -12,7 +12,8 @@ Public interface:
   - list_kols / get_kol
   - set_enabled / set_tier
   - get_watch_status
-  - sync_from_config   (config-driven, no-code watchlist management)
+  - sync_from_config     (config-driven, no-code watchlist management)
+  - capture_following    (Deliverable B: fetch + persist one following snapshot)
 
 Handles are normalized through the platform's provider when one exists (so X
 identity rules apply), and validated by the domain model regardless. Every public
@@ -23,9 +24,10 @@ reaches the store.
 import logging
 
 from app.core.config import settings
-from app.models.kol import KolEntry, KolSeed, WatchStatus
+from app.models.kol import FollowingSnapshot, KolEntry, KolSeed, WatchStatus
 from app.services import kol_store
 from app.services.social import get_provider, is_supported
+from app.services.social.base import ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +240,49 @@ def sync_from_config(seeds: list[dict] | None = None) -> dict[str, int]:
             added, updated, skipped,
         )
     return {"added": added, "updated": updated, "skipped": skipped}
+
+
+# --- Following capture (Deliverable B) ---------------------------------------
+
+
+async def capture_following(handle: str, platform: str | None = None) -> FollowingSnapshot:
+    """Fetch a KOL's current following list via its provider and persist it.
+
+    This is Deliverable B's single job: *retrieve and store* one snapshot. It does
+    NOT compare snapshots, detect new follows, score, or alert — those are later
+    deliverables. On success it saves the snapshot, records a successful sync, and
+    marks the KOL `active`. On a typed provider failure it records the error and
+    marks the KOL `error` (leaving prior snapshots untouched), then re-raises so
+    the caller/scheduler can react. `KeyError` if the KOL isn't on the watchlist.
+    """
+    platform = _resolve_platform(platform)
+    handle = _normalize_handle(platform, handle)
+
+    entry = kol_store.get_kol(platform, handle)
+    if entry is None:
+        raise KeyError(f"{platform}:{handle} is not on the watchlist")
+
+    provider = get_provider(platform)
+    if provider is None:
+        raise ValueError(f"no provider available for platform {platform!r}")
+    if not provider.capabilities().can_fetch_following:
+        raise ValueError(f"provider for {platform!r} cannot fetch following lists")
+
+    try:
+        snapshot = await provider.fetch_following(handle)
+    except ProviderError as exc:
+        # Typed, expected failure (auth/private/suspended/rate-limit/network):
+        # record it and surface an error status without corrupting history.
+        kol_store.record_sync(platform, handle, success=False, error=str(exc))
+        kol_store.set_last_checked(platform, handle, "error")
+        logger.info("capture_following failed for %s:%s — %s", platform, handle, exc)
+        raise
+
+    kol_store.save_snapshot(snapshot)
+    kol_store.record_sync(platform, handle, success=True)
+    kol_store.set_last_checked(platform, handle, "active")
+    logger.info(
+        "captured %s following accounts for %s:%s (complete=%s)",
+        len(snapshot.accounts), platform, handle, snapshot.complete,
+    )
+    return snapshot

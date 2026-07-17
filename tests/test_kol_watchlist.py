@@ -290,11 +290,11 @@ def test_unwired_platform_returns_none_provider():
     assert is_supported("lens") is False
 
 
-def test_x_capabilities_are_honest_for_deliverable_a():
+def test_x_capabilities():
     caps = get_provider("x").capabilities()
     assert caps.platform == "x"
-    # Foundation only: fetching is deferred, and the provider says so.
-    assert caps.can_fetch_following is False
+    # Deliverable B: the live following scrape is implemented.
+    assert caps.can_fetch_following is True
     assert caps.provides_stable_ids is True
     assert caps.requires_auth_session is True
 
@@ -321,10 +321,10 @@ def test_x_build_account_sets_url_and_platform():
     assert acct.profile_url == "https://x.com/neo"
 
 
-def test_x_fetch_following_is_deferred():
-    """Fetching must fail loudly (deferred), never silently return an empty set."""
-    with pytest.raises(NotImplementedError):
-        asyncio.run(get_provider("x").fetch_following("someone"))
+def test_x_fetch_following_implemented():
+    """Deliverable B implements fetching; detailed behavior is covered in
+    test_x_provider.py. Here we just confirm it's no longer a stub."""
+    assert get_provider("x").capabilities().can_fetch_following is True
 
 
 def test_registry_supports_custom_provider():

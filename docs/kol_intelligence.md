@@ -1,13 +1,18 @@
-# KOL Intelligence Engine — Architecture (Deliverable A: foundation)
+# KOL Intelligence Engine — Architecture
 
-This document covers the foundation shipped in **M23 Deliverable A**: the KOL
-watchlist and the generic social-provider abstraction. It deliberately stops at
-the foundation — scraping, snapshot diffing, follow detection, clustering, and
-alerting are **later deliverables** and are not implemented here.
+This document covers:
 
-> Scope note: everything below is offline and side-effect-free. No network calls,
-> no background loops, no alerts. The engine can store *who* to watch and knows
-> *how* it would read a platform, but does not yet read anything.
+- **M23 Deliverable A** — the KOL watchlist and the generic social-provider
+  abstraction (sections 1–9).
+- **M23 Deliverable B** — the X following scraper: a persistent authenticated
+  Playwright session that fetches and persists following snapshots (section 10).
+
+Snapshot diffing, follow detection, scoring, clustering, and alerting remain
+**later deliverables** and are not implemented.
+
+> Scope note for Deliverable B: the engine can now *read* one platform (X) and
+> *store* what it read. It still does not compare snapshots, detect new follows,
+> score, or alert. Deliverable B only retrieves and persists following snapshots.
 
 ---
 
@@ -213,7 +218,7 @@ and `error` are written once the Deliverable B scheduler runs.
 
 | Deferred | Where it lands |
 |---|---|
-| Playwright scraping / live `fetch_following` | Deliverable B |
+| ~~Playwright scraping / live `fetch_following`~~ | **Done — Deliverable B (§10)** |
 | Snapshot diffing / new-follow detection | Deliverable C |
 | Crypto-account detection | Deliverable D |
 | Rug/alpha pipeline integration | Deliverable E |
@@ -228,8 +233,117 @@ silently mistakes "not implemented" for "follows nobody".
 
 ## 9. Future migration path (X free-scrape → official API)
 
-Because all X specifics live behind `XProvider`, swapping the free Playwright
-scrape for the official X API later touches only `x_provider.py`: reimplement
-`fetch_following` and update `capabilities()`. The engine, watchlist, store, and
-every other provider are unaffected — the same property that lets new platforms
-plug in also lets one platform's data source change underneath.
+Because all X specifics live behind `XProvider` (and its `x_session`/`x_scraper`
+helpers), swapping the free Playwright scrape for the official X API later touches
+only those three files: reimplement `fetch_following` and update `capabilities()`.
+The engine, watchlist, store, and every other provider are unaffected — the same
+property that lets new platforms plug in also lets one platform's data source
+change underneath.
+
+---
+
+## 10. Deliverable B — the X following scraper
+
+Deliverable B implements X's `fetch_following` against a **persistent
+authenticated browser**. It reads and persists snapshots; it does not diff,
+detect, score, or alert.
+
+### 10.1 Module layout
+
+X is split into three files so session, DOM, and orchestration each stay testable
+in isolation:
+
+| Module | Responsibility |
+|---|---|
+| `social/x_session.py` | `XSession` — owns the browser lifecycle and **authentication**. A Playwright *persistent context* rooted at `x_user_data_dir` so cookies survive across runs. Detects session state; never bypasses auth. |
+| `social/x_scraper.py` | Pure page-driven DOM logic: profile-state classification, infinite-scroll collection with de-dup, handle extraction. Operates on an injected page. |
+| `social/x_provider.py` | Orchestrates: normalize handle → open session → scrape → return a `FollowingSnapshot`. Translates any stray error into a typed `ProviderError`. |
+| `social/errors.py` | The `ProviderError` taxonomy (below). |
+
+The two lower modules never touch each other; the provider wires them. Playwright
+is imported **lazily** (only inside the real launch path), so importing any of
+these modules — and the whole app and unit test suite — needs no browser binaries.
+
+### 10.2 Session management & authentication
+
+`XSession` uses a persistent context, so authentication is a one-time manual step:
+
+- **Existing session** — `ensure_ready()` opens the profile, loads `/home`, and
+  confirms authed chrome is present. Returns a ready page.
+- **Expired session** — profile has prior state but `/home` redirects to login →
+  `SessionExpiredError` (not retryable; a human must reauthenticate).
+- **No session** — empty/missing profile dir → `AuthUnavailableError`.
+- **Manual (re)authentication** — `login_interactive()` is the *only* auth entry
+  point. It forces a headful window and waits for a human to complete X's login/
+  challenge, then persists the session. We never type credentials or solve
+  challenges programmatically, and never bypass authentication.
+
+The context launcher is injectable (`context_factory`), which is how the tests
+exercise all four states with a fake context and zero Playwright dependency.
+
+Setup (once): `python -m playwright install chromium`, then run the interactive
+login with `x_headless=False` to seed `data/x_profile/`. That directory holds
+session credentials and is gitignored (`data/`).
+
+### 10.3 Snapshot fetching
+
+`x_scraper.scrape_following(page, handle)`:
+
+1. Navigate to `https://x.com/<handle>/following`.
+2. `classify_profile_state` — before scrolling, inspect the page and raise a typed
+   error for private / suspended / not-found (rename) / rate-limited states, so a
+   bad account never yields a misleading empty list.
+3. `scroll_and_collect` — X virtualizes the list (only a window of rows is in the
+   DOM), so we read handles on **every** scroll step and accumulate into a
+   dict keyed by lowercased handle (de-dup). Scrolling stops when:
+   - `x_scroll_stable_rounds` consecutive scrolls add nothing new (list end), or
+   - `x_scroll_max_rounds` / `x_following_max` safety caps trip → the result is
+     flagged `complete=False`.
+
+The provider wraps the rows into a normalized `FollowingSnapshot` (handles
+lowercased, profile URLs built). `complete=False` propagates so later diffing can
+refuse to treat a partial pull as "unfollowed everyone".
+
+### 10.4 Error taxonomy (`errors.py`)
+
+All subclass Deliverable A's `ProviderError`, so `except ProviderError` still
+catches everything and `.retryable` still works; callers that need to react
+specifically match a subclass.
+
+| Error | retryable | Meaning |
+|---|---|---|
+| `SessionExpiredError` | no | Session lapsed; needs manual reauth. |
+| `AuthUnavailableError` | no | No session ever established. |
+| `RateLimitedError` | yes | X is throttling; carries `retry_after_seconds` hint. |
+| `TransientNetworkError` | yes | Timeout / connection reset / navigation failure. |
+| `AccountPrivateError` | no | Target is protected; following not visible. |
+| `AccountUnavailableError` | no | Suspended / not-found / deactivated. Handle **renames** land here (old handle 404s); re-linking is an explicit later-deliverable decision, never an automatic guess. |
+
+The provider's catch-all converts any unexpected browser exception into a
+`TransientNetworkError` — a scrape failure always degrades to an explicit,
+typed error, never a false "follows nobody".
+
+### 10.5 Persistence facade
+
+`kol_watchlist.capture_following(handle, platform=None)` is the public entry point:
+
+1. Resolve + normalize the handle; require the KOL to be on the watchlist.
+2. Check the provider advertises `can_fetch_following`.
+3. `await provider.fetch_following(handle)`.
+4. On success: `save_snapshot`, `record_sync(success=True)`, status → `active`.
+5. On a typed failure: `record_sync(success=False, error=…)`, status → `error`,
+   prior snapshots left intact, and the error re-raised for the caller/scheduler.
+
+It stores snapshots using the Deliverable A persistence layer unchanged. It does
+**not** compare snapshots — two captures simply produce two independent rows.
+
+### 10.6 Extension points
+
+- **New platform** — unchanged from §3: write a provider, register it. A platform
+  can reuse the session/scraper split if it's also browser-scraped, or ignore it
+  entirely (e.g. an API-based Farcaster provider needs neither).
+- **Swap X's data source** — see §9; now spans `x_provider`/`x_session`/`x_scraper`.
+- **Scheduler (Deliverable C+)** — will call `capture_following` per enabled KOL on
+  a cadence, using `ProviderError.retryable` / `retry_after_seconds` for back-off.
+- **Tuning** — scroll/timeout/cap behavior is all config (`x_*` in `config.py`);
+  no code change to adjust pacing or limits.

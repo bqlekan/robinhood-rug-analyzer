@@ -8,6 +8,14 @@ a matter of writing one new module and registering it — no engine change.
 """
 
 from app.services.social.base import ProviderError, SocialGraphProvider
+from app.services.social.errors import (
+    AccountPrivateError,
+    AccountUnavailableError,
+    AuthUnavailableError,
+    RateLimitedError,
+    SessionExpiredError,
+    TransientNetworkError,
+)
 from app.services.social.registry import (
     available_platforms,
     get_provider,
@@ -22,4 +30,11 @@ __all__ = [
     "register_provider",
     "available_platforms",
     "is_supported",
+    # Error taxonomy (Deliverable B)
+    "SessionExpiredError",
+    "AuthUnavailableError",
+    "RateLimitedError",
+    "TransientNetworkError",
+    "AccountPrivateError",
+    "AccountUnavailableError",
 ]

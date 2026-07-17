@@ -141,6 +141,30 @@ class Settings(BaseSettings):
     # operator edits made via the API. Removal from config never auto-deletes.
     kol_config_overwrites: bool = True
 
+    # --- X (Twitter) scraping (M23 Deliverable B) ---
+    # Persistent browser profile directory. Cookies/session live here so we reuse
+    # an authenticated session across runs instead of logging in every time. Keep
+    # it out of version control; it holds session credentials.
+    x_user_data_dir: str = "data/x_profile"
+    # Headless by default for servers. Set False for the one-time manual login /
+    # reauthentication flow so a human can complete the X challenge in a real window.
+    x_headless: bool = True
+    # Per-navigation timeout (ms) for goto/waits — X can be slow under load.
+    x_nav_timeout_ms: int = 30000
+    # Infinite-scroll tuning for the Following page.
+    # Pause between scroll steps to let virtualized rows render + network settle.
+    x_scroll_pause_ms: int = 900
+    # Hard cap on scroll iterations so a huge/rate-limited account can't loop forever.
+    x_scroll_max_rounds: int = 300
+    # Stop once this many consecutive scrolls yield no new handles (list end reached).
+    x_scroll_stable_rounds: int = 3
+    # Safety cap on collected handles per snapshot (a runaway account or DOM bug
+    # can't blow up memory / the DB row).
+    x_following_max: int = 5000
+    # Optional explicit path to a chromium executable (e.g. system Chrome). Empty
+    # uses Playwright's bundled browser.
+    x_browser_executable: str = ""
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

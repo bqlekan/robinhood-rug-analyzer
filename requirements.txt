@@ -3,3 +3,8 @@ uvicorn[standard]==0.34.0
 pydantic-settings==2.7.1
 python-dotenv==1.0.1
 httpx==0.28.1
+# KOL Intelligence Engine (M23 Deliverable B): X following-graph scraping via a
+# persistent authenticated browser. Imported lazily by the X provider, so the
+# rest of the app and the unit tests run without the browser binaries installed
+# (install them once with `python -m playwright install chromium`).
+playwright==1.49.1
