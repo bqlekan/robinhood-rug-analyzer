@@ -12,6 +12,11 @@ __pycache__/
 # Logs
 logs/*.log
 
+# Solidity build intermediates (runtime bytecode is pinned in app/core/honeypot_artifact.py)
+contracts/*.bin-runtime
+contracts/*.bin
+contracts/*.abi
+
 # OS/editor
 .DS_Store
 .vscode/

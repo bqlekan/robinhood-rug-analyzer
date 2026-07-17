@@ -70,11 +70,37 @@ class Settings(BaseSettings):
     honeypot_weth_address: str | None = honeypot_artifact.ROBINHOOD_WETH
     # Compiled prober-contract runtime bytecode, injected via `code` override so the
     # buy->sell round-trip runs atomically in ONE eth_call (two calls can't share state).
-    # ABI: probe(address router,address weth,address token,uint256 buyWei) returns
-    # (uint256 bought,uint256 soldBack); catches the sell revert and returns soldBack=0.
-    # Pinned artifact compiled from contracts/HoneypotProber.sol (Uniswap v3 exactInputSingle).
+    # ABI: probe(address router,address weth,address token,uint256 buyWei,bytes buyPath,
+    # bytes sellPath) -> (uint256 bought,uint256 soldBack); catches the sell revert and
+    # returns soldBack=0. Routes are built off-chain (route_discovery), so the pinned
+    # bytecode is route-agnostic. Compiled from contracts/HoneypotProber.sol.
     honeypot_prober_code: str | None = honeypot_artifact.PROBER_RUNTIME_CODE
     honeypot_prober_selector: str = honeypot_artifact.PROBER_SELECTOR
+    # Uniswap v3 factory, for pool discovery (getPool(tokenA,tokenB,fee)). Chain-specific.
+    honeypot_v3_factory: str | None = honeypot_artifact.ROBINHOOD_V3_FACTORY
+    # Ordered quote assets tried when routing a buy->sell round-trip. The first entry MUST
+    # be the wrapped-native token (the prober always funds itself by wrapping native, so
+    # every path starts at WETH). Later entries are reached via a WETH->quote hop, letting
+    # the sim reach tokens with no direct WETH pool (e.g. USDG-paired stock tokens). Add a
+    # new quote asset by appending its address here -- no code or recompile needed.
+    honeypot_quote_assets: list[str] = [
+        honeypot_artifact.ROBINHOOD_WETH,
+        honeypot_artifact.ROBINHOOD_USDG,
+    ]
+    # Uniswap v3 fee tiers (hundredths of a bip) probed for pools, cheapest first.
+    honeypot_fee_tiers: list[int] = [500, 3000, 10000, 100]
+    # Minimum quote-side reserve (pool balanceOf the quote asset, in that asset's base
+    # units) for a v3 pool to count as usable. Keyed by lowercased quote-asset address so
+    # each asset gets a floor in its OWN decimals (WETH has 18, USDG 6) -- a single scalar
+    # can't serve both. Reserves are checked, NOT `liquidity()`: a concentrated-liquidity
+    # pool can report zero in-range liquidity while still holding swappable balances. A
+    # dust pool (e.g. 6 wei WETH) is rejected so the sim doesn't pick it and misread the
+    # near-zero round-trip as a honeypot. Unlisted assets fall back to the "*" default.
+    honeypot_min_quote_reserve: dict[str, int] = {
+        honeypot_artifact.ROBINHOOD_WETH.lower(): 10**16,  # 0.01 WETH (== one buy leg)
+        honeypot_artifact.ROBINHOOD_USDG.lower(): 10**6,   # 1 USDG (6 decimals)
+        "*": 1,
+    }
 
     # --- Wallet intelligence ---
     # How many of a token's earliest buyers to treat as candidate insiders.

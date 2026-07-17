@@ -311,8 +311,12 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M10 — Honeypot / sell-tax simulation (flagship)
+### M10 — Honeypot / sell-tax simulation (flagship) ✅ COMPLETE
 
+- **Status:** ✅ **COMPLETE** (2026-07-17). All deliverables shipped and validated live on
+  Robinhood Chain: **A** reusable JSON-RPC client, **B** honeypot/sell-tax simulation
+  (v3 SwapRouter02, route-agnostic prober with WETH-direct + USDG quote-hop discovery),
+  **C** M9 creation-tx routed through the RPC client with Blockscout fallback. 144 tests pass.
 - **Goal:** Simulate a buy→sell round-trip via RPC static calls to detect unsellable tokens,
   extreme sell taxes, and blacklist-on-buy traps.
 - **Why it matters:** This is the single strongest rug signal that exists and the biggest
@@ -333,19 +337,28 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     for honeypot, high/20 for extreme tax; `sellable`/`unknown` add nothing and are
     deliberately kept out of `_CONFIDENCE_WEIGHTS` so a failed sim never distorts risk or
     confidence. Result cached per-token (one sim per analyze; `unknown` stays retryable).
-    **As-built activation:** the chain runs Uniswap **v3** (not v2), so the prober calls
-    `SwapRouter02.exactInputSingle` (no deadline field), sweeping the four standard fee tiers
-    until one swaps. Verified addresses (each cross-checked on-chain, pinned in
-    `app/core/honeypot_artifact.py`): WETH `0x0Bd7…AD73` (Robinhood docs + Blockscout verified)
-    and SwapRouter02 `0xCaf6…5cb2` (its `WETH9()`/`factory()` read live). Prober source in
-    `contracts/HoneypotProber.sol`, compiled with solc 0.8.24 and pinned as runtime bytecode.
-    Verified end-to-end against the live RPC: WETH-paired tokens (TSLA, USDG) return
-    `sellable` with a real round-trip loss; USDG-paired-only tokens degrade to `unknown`
-    (no direct WETH pool) — never a false "safe." **Gotcha fixed during activation:** state-
-    override `code` injection does NOT run a constructor, so constructor-initialized storage
-    reads as zero — fee tiers had to move from a storage array to a function-local memory
-    literal. **Deferred:** USDG (stable) as an alternate quote-hop so USDG-only tokens can be
-    simulated too; router-ABI variance for other DEXes remains the documented risk.
+    **As-built activation:** the chain runs Uniswap **v3** (not v2). Verified addresses
+    (each cross-checked on-chain, pinned in `app/core/honeypot_artifact.py`): WETH
+    `0x0Bd7…AD73` (Robinhood docs + Blockscout verified), USDG `0x5fc5…d168`, SwapRouter02
+    `0xCaf6…5cb2` (its `WETH9()`/`factory()` read live), and v3 factory `0x1f7d…2efa`.
+    Prober source in `contracts/HoneypotProber.sol`, compiled with solc 0.8.24 and pinned
+    as runtime bytecode. **Gotcha fixed during activation:** state-override `code` injection
+    does NOT run a constructor, so constructor-initialized storage reads as zero — routing
+    data must be passed as calldata, never stored.
+    **USDG quote-hop (done — completes B):** the prober is route-agnostic — it calls
+    `exactInput` with `path` bytes built off-chain by a reusable
+    `app/services/route_discovery.py`. Discovery reads the v3 factory `getPool` + pool
+    reserves (`balanceOf`, deliberately NOT `liquidity()` — a concentrated-liquidity pool
+    reads zero in-range liquidity while still holding swappable reserves) and picks, in
+    configured preference order, the first quote asset with a funded path: WETH-direct,
+    else a WETH→quote→token 2-hop. Quote assets and per-asset reserve floors (each in its
+    own token decimals) are config (`honeypot_quote_assets`, `honeypot_min_quote_reserve`,
+    `honeypot_fee_tiers`); adding a future quote asset is a config edit, no recompile.
+    Verified live end-to-end: WETH-paired tokens (TSLA, CASHCAT) route direct → `sellable`;
+    a USDG-only token (KARMA, dust WETH pool) routes WETH→USDG→token → `sellable`; a token
+    with dust on both quote assets (AAPL) degrades to `unknown` — never a false "safe."
+    Router-ABI variance for OTHER DEXes remains the documented risk. Reproduce with
+    `python -m scripts.probe_honeypot_e2e`.
   - **C. Route M9 creation-tx retrieval through the client** (carried from M9): prefer RPC
     (`eth_getTransactionByHash` / `eth_getTransactionReceipt`) and **fall back to the current
     Blockscout path** (`blockscout_client.get_transaction` / `get_transaction_logs`) when RPC
@@ -363,11 +376,12 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   Detection Δ: Very High.
 - **Acceptance criteria:** ✅ met and verified live on Robinhood Chain.
   - Known-sellable token → sellable; simulated honeypot → flagged with a high-severity signal.
-    ✅ TSLA and USDG (WETH-paired) return `sellable` end-to-end via the live RPC; a sell revert
-    is caught as `soldBack=0` → honeypot. Verify with `python -m scripts.probe_honeypot_e2e`.
+    ✅ WETH-paired (TSLA, CASHCAT) route direct and USDG-only (KARMA) routes WETH→USDG→token,
+    all returning `sellable` end-to-end via the live RPC; a sell revert is caught as
+    `soldBack=0` → honeypot. Verify with `python -m scripts.probe_honeypot_e2e`.
   - Simulation is bounded (one per analyze) and cached; RPC failure degrades to "could not
-    simulate," never a crash or false "safe." ✅ USDG-only-paired tokens (no direct WETH pool)
-    degrade to `unknown`, not a false verdict.
+    simulate," never a crash or false "safe." ✅ Tokens with no funded WETH or quote-asset
+    pool (AAPL — dust on both) degrade to `unknown`, not a false verdict.
 - **Suggested tests:** sim result → signal mapping (pure); failure path yields explicit
   unknown, not a clean score.
 - **RPC probe result (2026-07-16):** the public RPC is **Arbitrum Nitro** (`nitro/v3.11.3`,

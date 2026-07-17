@@ -13,9 +13,11 @@ Design guarantees:
     production until a router is sourced.
   - Every uncertainty (sim disabled, no router, RPC error, setup revert) resolves to
     "unknown" ("could not simulate") — never a crash and never a false "sellable".
-  - Uniswap v3: the injected prober calls SwapRouter02.exactInputSingle across the
-    standard fee tiers. Router + wrapped-native address + prober bytecode are config
-    (defaulted to the verified Robinhood Chain artifact); other chains stay inert.
+  - Uniswap v3, route-agnostic: `route_discovery` picks a liquidity-verified path (direct
+    WETH pool or a WETH->quote->token hop via a configured quote asset like USDG) and the
+    injected prober runs SwapRouter02.exactInput on those path bytes. Router + wrapped-
+    native + prober bytecode are config (defaulted to the verified Robinhood Chain
+    artifact); other chains stay inert.
 
 This module owns all simulation logic; `rug_analyzer` only calls `simulate()` and threads
 the result into the scorer.
@@ -25,7 +27,7 @@ import logging
 
 from app.core.config import settings
 from app.models.token import HoneypotResult, TokenMarketData
-from app.services import rpc_client
+from app.services import route_discovery, rpc_client
 from app.services.cache import TTLCache, MISS
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,29 @@ def _enc_uint(value: int) -> str:
 def _enc_addr(address: str) -> str:
     """address -> 32-byte left-padded ABI word, no 0x prefix."""
     return address.lower().replace("0x", "").rjust(64, "0")
+
+
+def _enc_bytes_args(*blobs: str) -> str:
+    """ABI-encode trailing dynamic `bytes` args for the probe() call.
+
+    The 4 fixed head words (router, weth, token, buyWei) are emitted by the caller; this
+    appends the offset word for EACH bytes arg, then each arg's (length + right-padded
+    data) tail. Offsets are measured from the start of the whole argument head, which
+    includes these offset words themselves (spec: head = 6 words = 4 values + 2 offsets).
+    """
+    n_head = 4 + len(blobs)  # value words already emitted + one offset word per blob
+    tails: list[str] = []
+    offset_words: list[str] = []
+    running = n_head * 32
+    for blob in blobs:
+        body = blob.replace("0x", "")
+        nbytes = len(body) // 2
+        offset_words.append(_enc_uint(running))
+        padded = body + "0" * ((64 - len(body) % 64) % 64)  # right-pad to 32-byte multiple
+        tail = _enc_uint(nbytes) + padded
+        tails.append(tail)
+        running += len(tail) // 2
+    return "".join(offset_words) + "".join(tails)
 
 
 def _dec_uint(data: str | None) -> int | None:
@@ -141,11 +166,20 @@ async def _run_roundtrip(token_address: str, market: TokenMarketData, router: st
         return HoneypotResult(status="unknown",
                               detail="Simulation artifacts (wrapped-native / prober) not configured for this chain.")
 
+    # Discover a liquidity-verified route (direct WETH pool, or via a configured quote
+    # asset like USDG). No liquid route -> "unknown" (never a false verdict), no sim call.
+    route = await route_discovery.discover_route(token_address)
+    if route is None:
+        return HoneypotResult(status="unknown",
+                              detail="No liquid Uniswap v3 route found (no WETH or quote-asset pool); could not simulate.")
+
     spent = settings.honeypot_sim_buy_wei
-    # probe(router, weth, token, buyWei) — 4 address/uint words after the selector.
+    # probe(router,weth,token,buyWei,bytes buyPath,bytes sellPath): 4 head words + 2
+    # dynamic-bytes tail. The two trailing head slots are offsets to the tail (ABI spec).
     calldata = (
         settings.honeypot_prober_selector
         + _enc_addr(router) + _enc_addr(weth) + _enc_addr(token_address) + _enc_uint(spent)
+        + _enc_bytes_args(route.buy_path, route.sell_path)
     )
     override = {
         SYNTHETIC_BUYER: {
