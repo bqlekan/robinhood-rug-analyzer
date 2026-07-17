@@ -325,36 +325,49 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     false "safe"). Consumed by the rest of M10 and later milestones needing raw RPC access
     (M11 privilege reads, M15). Nothing else in M10 can start until this exists.
   - **B. Honeypot / sell-tax simulation** — the flagship, built on top of the client from A.
-    **Shipped (inert by default).** `app/services/honeypot_sim.py`: pure ABI encode/decode +
-    `classify()` (honeypot | high_tax | sellable | unknown) and a buy→sell round-trip run
-    atomically in ONE state-override `eth_call` via an injected prober contract (two calls
-    can't share state). Wired through `rug_analyzer` (reuses the fetched market pair, zero
-    discovery calls) into a new additive `honeypot` scoring signal — critical/40 for
-    honeypot, high/20 for extreme tax; `sellable`/`unknown` add nothing and are deliberately
-    kept out of `_CONFIDENCE_WEIGHTS` so a failed sim never distorts risk or confidence.
-    Result cached per-token (one sim per analyze; `unknown` stays retryable). **Inert until
-    config is populated:** needs a per-DEX router address (`dex_routers`), the wrapped-native
-    address (`honeypot_weth_address`), and the compiled prober bytecode
-    (`honeypot_prober_code` + selector) — all empty in production, so no RPC fires and
-    behavior is unchanged. Remaining to activate: source a verified router for this chain and
-    compile/pin the prober artifact (deferred; router-ABI variance is the documented High risk).
+    **Shipped and activated on Robinhood Chain.** `app/services/honeypot_sim.py`: pure ABI
+    encode/decode + `classify()` (honeypot | high_tax | sellable | unknown) and a buy→sell
+    round-trip run atomically in ONE state-override `eth_call` via an injected prober contract
+    (two calls can't share state). Wired through `rug_analyzer` (reuses the fetched market
+    pair, zero discovery calls) into a new additive `honeypot` scoring signal — critical/40
+    for honeypot, high/20 for extreme tax; `sellable`/`unknown` add nothing and are
+    deliberately kept out of `_CONFIDENCE_WEIGHTS` so a failed sim never distorts risk or
+    confidence. Result cached per-token (one sim per analyze; `unknown` stays retryable).
+    **As-built activation:** the chain runs Uniswap **v3** (not v2), so the prober calls
+    `SwapRouter02.exactInputSingle` (no deadline field), sweeping the four standard fee tiers
+    until one swaps. Verified addresses (each cross-checked on-chain, pinned in
+    `app/core/honeypot_artifact.py`): WETH `0x0Bd7…AD73` (Robinhood docs + Blockscout verified)
+    and SwapRouter02 `0xCaf6…5cb2` (its `WETH9()`/`factory()` read live). Prober source in
+    `contracts/HoneypotProber.sol`, compiled with solc 0.8.24 and pinned as runtime bytecode.
+    Verified end-to-end against the live RPC: WETH-paired tokens (TSLA, USDG) return
+    `sellable` with a real round-trip loss; USDG-paired-only tokens degrade to `unknown`
+    (no direct WETH pool) — never a false "safe." **Gotcha fixed during activation:** state-
+    override `code` injection does NOT run a constructor, so constructor-initialized storage
+    reads as zero — fee tiers had to move from a storage array to a function-local memory
+    literal. **Deferred:** USDG (stable) as an alternate quote-hop so USDG-only tokens can be
+    simulated too; router-ABI variance for other DEXes remains the documented risk.
   - **C. Route M9 creation-tx retrieval through the client** (carried from M9): prefer RPC
     (`eth_getTransactionByHash` / `eth_getTransactionReceipt`) and **fall back to the current
     Blockscout path** (`blockscout_client.get_transaction` / `get_transaction_logs`) when RPC
     is unavailable or errors. M9's launchpad detection consumes whichever source succeeds; the
     registry-driven matching (`match_creation_evidence`) is source-agnostic and needs no
     change. See the marker at the M9 creation-evidence block in `rug_analyzer.py`.
-- **Files/modules:** new JSON-RPC client module, new simulation module, `rug_analyzer.py`
-  (wire result), `scoring.py` (new signals), `models/token.py`, `frontend/app.js`.
+- **Files/modules:** new JSON-RPC client module, new simulation module (`honeypot_sim.py`),
+  pinned artifact (`app/core/honeypot_artifact.py`), prober source (`contracts/HoneypotProber.sol`),
+  live E2E check (`scripts/probe_honeypot_e2e.py`), `rug_analyzer.py` (wire result),
+  `scoring.py` (new signals), `models/token.py`, `frontend/app.js`.
 - **Dependencies:** M1 (cache — one sim per analyze, cached). Builds its own RPC client (A);
   does not depend on M9, which shipped on Blockscout.
 - **Effort:** Large · **Risk:** High (correctness of simulation; chain-specific router ABI).
 - **Expected improvement:** Catches unsellable/high-tax rugs metadata can't see.
   Detection Δ: Very High.
-- **Acceptance criteria:**
+- **Acceptance criteria:** ✅ met and verified live on Robinhood Chain.
   - Known-sellable token → sellable; simulated honeypot → flagged with a high-severity signal.
+    ✅ TSLA and USDG (WETH-paired) return `sellable` end-to-end via the live RPC; a sell revert
+    is caught as `soldBack=0` → honeypot. Verify with `python -m scripts.probe_honeypot_e2e`.
   - Simulation is bounded (one per analyze) and cached; RPC failure degrades to "could not
-    simulate," never a crash or false "safe."
+    simulate," never a crash or false "safe." ✅ USDG-only-paired tokens (no direct WETH pool)
+    degrade to `unknown`, not a false verdict.
 - **Suggested tests:** sim result → signal mapping (pure); failure path yields explicit
   unknown, not a clean score.
 - **RPC probe result (2026-07-16):** the public RPC is **Arbitrum Nitro** (`nitro/v3.11.3`,
@@ -365,6 +378,18 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   buy→sell round-trip via state-override `eth_call` is viable; the standing "RPC reliability"
   blocker is cleared for override support. The remaining chain-specific unknown is the DEX
   router address/ABI family (still config-gated, inert until sourced).
+- **Activation result (2026-07-16):** DEX router unknown **resolved** — the chain runs Uniswap
+  **v3**, not v2. Probe/prober rewritten to v3 semantics (`SwapRouter02.exactInputSingle`,
+  fee-tier sweep). Router `0xCaf6…5cb2` confirmed by reading its `WETH9()` (matches the docs
+  WETH) and `factory()` live; the v3 factory `getPool()` and pool `liquidity()`/`slot0()`
+  reads confirmed real USDG/WETH and TSLA/WETH pools. Prober (`contracts/HoneypotProber.sol`)
+  compiled with **solc 0.8.24** (no bytecode hand-written) and pinned in
+  `app/core/honeypot_artifact.py`; config now defaults the `uniswap` dexId to the verified
+  router + WETH + prober, so the sim is **live in production** on this chain. End-to-end
+  confirmed against the live RPC (TSLA/USDG → sellable). **No outstanding activation task.**
+  One bug caught only by live verification: a `code` state override does not run a constructor,
+  so constructor-initialized storage reads as zero — fee tiers moved to a function-local memory
+  literal and re-pinned.
 
 ---
 

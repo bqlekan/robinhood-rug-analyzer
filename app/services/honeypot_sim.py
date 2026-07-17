@@ -13,8 +13,9 @@ Design guarantees:
     production until a router is sourced.
   - Every uncertainty (sim disabled, no router, RPC error, setup revert) resolves to
     "unknown" ("could not simulate") — never a crash and never a false "sellable".
-  - Chain-agnostic where possible: standard ERC-20 + UniswapV2 router ABIs; only the
-    router address is chain-specific (config).
+  - Uniswap v3: the injected prober calls SwapRouter02.exactInputSingle across the
+    standard fee tiers. Router + wrapped-native address + prober bytecode are config
+    (defaulted to the verified Robinhood Chain artifact); other chains stay inert.
 
 This module owns all simulation logic; `rug_analyzer` only calls `simulate()` and threads
 the result into the scorer.
@@ -34,12 +35,9 @@ logger = logging.getLogger(__name__)
 # "could not simulate" and must stay retryable.
 _sim_cache = TTLCache(ttl=settings.http_cache_ttl_seconds, max_size=settings.http_cache_max_size)
 
-# 4-byte function selectors (keccak256(signature)[:4]). Standard, chain-agnostic.
-SEL_GET_AMOUNTS_OUT = "0xd06ca61f"  # getAmountsOut(uint256,address[])
-SEL_SWAP_ETH_FOR_TOKENS = "0x7ff36ab5"  # swapExactETHForTokens(uint256,address[],address,uint256)
-SEL_SWAP_TOKENS_FOR_ETH = "0x18cbafe5"  # swapExactTokensForETH(uint256,uint256,address[],address,uint256)
-SEL_APPROVE = "0x095ea7b3"  # approve(address,uint256)
-SEL_BALANCE_OF = "0x70a08231"  # balanceOf(address)
+# All swap/approve/wrap logic lives in the injected prober contract
+# (contracts/HoneypotProber.sol); this module only encodes its `probe(...)` call and
+# decodes the (bought, soldBack) return. The selector is pinned in config.
 
 # Fixed synthetic actor; never a real wallet. Funded only via ephemeral state override.
 SYNTHETIC_BUYER = "0x00000000000000000000000000000000c0ffee00"

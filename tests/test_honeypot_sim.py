@@ -115,6 +115,46 @@ def test_roundtrip_sellable_low_loss(monkeypatch):
     assert r.status == "sellable"
 
 
+# --- Robinhood Chain activation wiring (M10 option 2) ---
+
+def test_verified_robinhood_artifact_is_pinned():
+    from app.core import honeypot_artifact as art
+
+    # Addresses cross-checked on-chain during activation; guard against silent edits.
+    assert art.ROBINHOOD_WETH == "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+    assert art.ROBINHOOD_SWAPROUTER02 == "0xCaf681a66D020601342297493863E78C959E5cb2"
+    assert art.PROBER_SELECTOR == "0x5a7b8268"
+    body = art.PROBER_RUNTIME_CODE
+    assert body.startswith("0x") and len(body) > 2
+    assert all(c in "0123456789abcdefABCDEF" for c in body[2:])  # valid hex, no placeholders
+
+
+def test_config_defaults_activate_sim_for_robinhood():
+    from app.core import honeypot_artifact as art
+
+    # The uniswap dexId must map to the verified v3 router, with WETH + prober present.
+    assert settings.dex_routers.get("uniswap") == art.ROBINHOOD_SWAPROUTER02
+    assert settings.honeypot_weth_address == art.ROBINHOOD_WETH
+    assert settings.honeypot_prober_selector == art.PROBER_SELECTOR
+    assert settings.honeypot_prober_code == art.PROBER_RUNTIME_CODE
+
+
+def test_probe_calldata_uses_pinned_selector_and_router(monkeypatch):
+    from app.core import honeypot_artifact as art
+
+    ret = "0x" + honeypot_sim._enc_uint(990) + honeypot_sim._enc_uint(970)
+    spy = _wire_prober(monkeypatch, ret)
+    # Use the real router + selector rather than the fixture's placeholders.
+    monkeypatch.setattr(settings, "dex_routers", {"uniswap": art.ROBINHOOD_SWAPROUTER02})
+    monkeypatch.setattr(settings, "honeypot_prober_selector", art.PROBER_SELECTOR)
+    _run(honeypot_sim.simulate("0xToken", TokenMarketData(dex_id="uniswap")))
+
+    _to, data, _override = spy.seen
+    assert data.startswith(art.PROBER_SELECTOR)  # probe(...) selector
+    # router is the first address argument after the selector
+    assert art.ROBINHOOD_SWAPROUTER02[2:].lower() in data.lower()
+
+
 def test_executed_verdict_is_cached_unknown_is_not(monkeypatch):
     honeypot_sim._sim_cache.clear()
     calls = {"n": 0}
