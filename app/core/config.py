@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     # truth). When False, config only ever ADDS missing KOLs and never clobbers
     # operator edits made via the API. Removal from config never auto-deletes.
     kol_config_overwrites: bool = True
+    # Snapshot retention (M23 Deliverable C). How many of the most recent snapshots
+    # to keep per KOL; older ones are pruned after each save so the table can't grow
+    # without bound. Diffing only ever needs the latest complete snapshot, but a few
+    # are retained for history/debugging. Set <= 0 to disable pruning (keep all).
+    kol_snapshot_retain: int = 10
 
     # --- X (Twitter) scraping (M23 Deliverable B) ---
     # Persistent browser profile directory. Cookies/session live here so we reuse

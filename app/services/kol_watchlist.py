@@ -25,7 +25,7 @@ import logging
 
 from app.core.config import settings
 from app.models.kol import FollowingSnapshot, KolEntry, KolSeed, WatchStatus
-from app.services import kol_store
+from app.services import kol_monitor, kol_store
 from app.services.social import get_provider, is_supported
 from app.services.social.base import ProviderError
 
@@ -246,14 +246,22 @@ def sync_from_config(seeds: list[dict] | None = None) -> dict[str, int]:
 
 
 async def capture_following(handle: str, platform: str | None = None) -> FollowingSnapshot:
-    """Fetch a KOL's current following list via its provider and persist it.
+    """Fetch a KOL's current following list, then persist + diff it.
 
-    This is Deliverable B's single job: *retrieve and store* one snapshot. It does
-    NOT compare snapshots, detect new follows, score, or alert — those are later
-    deliverables. On success it saves the snapshot, records a successful sync, and
-    marks the KOL `active`. On a typed provider failure it records the error and
-    marks the KOL `error` (leaving prior snapshots untouched), then re-raises so
-    the caller/scheduler can react. `KeyError` if the KOL isn't on the watchlist.
+    Fetching is Deliverable B; the persist step is routed through
+    `kol_monitor.process_snapshot` (Deliverable C), which stores the snapshot and
+    detects/persists follow, unfollow, and profile-change events. This function
+    still does NOT alert, score, cluster, or infer crypto relevance.
+
+    Outcomes:
+      - Complete capture  -> monitor persists snapshot + change events; sync marked
+        successful; status `active`.
+      - Incomplete capture -> monitor persists NOTHING (previous valid snapshot is
+        preserved); sync marked failed so the next scheduled run retries; status
+        `error`. Not raised — a partial pull isn't an exception.
+      - Typed provider failure -> error recorded, status `error`, prior snapshots
+        untouched, re-raised for the caller/scheduler.
+    `KeyError` if the KOL isn't on the watchlist.
     """
     platform = _resolve_platform(platform)
     handle = _normalize_handle(platform, handle)
@@ -278,11 +286,26 @@ async def capture_following(handle: str, platform: str | None = None) -> Followi
         logger.info("capture_following failed for %s:%s — %s", platform, handle, exc)
         raise
 
-    kol_store.save_snapshot(snapshot)
+    diff = kol_monitor.process_snapshot(snapshot)
+
+    if diff is None:
+        # Incomplete/interrupted capture: nothing persisted, previous snapshot kept.
+        # Treat as a retryable non-success so the scheduler tries again.
+        kol_store.record_sync(
+            platform, handle, success=False, error="incomplete snapshot; not persisted"
+        )
+        kol_store.set_last_checked(platform, handle, "error")
+        logger.info(
+            "capture_following got incomplete snapshot for %s:%s — preserved prior state",
+            platform, handle,
+        )
+        return snapshot
+
     kol_store.record_sync(platform, handle, success=True)
     kol_store.set_last_checked(platform, handle, "active")
     logger.info(
-        "captured %s following accounts for %s:%s (complete=%s)",
-        len(snapshot.accounts), platform, handle, snapshot.complete,
+        "captured %s following accounts for %s:%s (%s new, %s unfollowed)",
+        len(snapshot.accounts), platform, handle,
+        len(diff.new_follows), len(diff.unfollows),
     )
     return snapshot

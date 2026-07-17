@@ -74,6 +74,16 @@ class SocialAccount(BaseModel):
     # the crypto-account detector in a later deliverable; empty for now.
     links: list[str] = Field(default_factory=list)
 
+    # --- Rich profile metadata (Deliverable C) -------------------------------
+    # All optional: a provider populates what it can scrape, and absence ("None")
+    # is treated as "unknown", never as a change. Adding future fields here is
+    # non-breaking because everything defaults to None and the store serializes
+    # the whole model to JSON (see kol_store) rather than fixed columns.
+    verified: bool | None = None
+    followers_count: int | None = None
+    following_count: int | None = None
+    profile_image_url: str | None = None
+
     @field_validator("platform")
     @classmethod
     def _validate_platform(cls, v: str) -> str:
@@ -113,8 +123,122 @@ class FollowingSnapshot(BaseModel):
     complete: bool = True
 
     def keys(self) -> set[str]:
-        """Set of account identities, for future snapshot diffing."""
+        """Set of account identities, for snapshot diffing."""
         return {a.key() for a in self.accounts}
+
+    def by_key(self) -> dict[str, "SocialAccount"]:
+        """Accounts indexed by their diff key. Later duplicates (same key) collapse
+        onto the first occurrence, so a snapshot that accidentally lists an account
+        twice still counts it once — diffing must never treat a duplicate as noise."""
+        indexed: dict[str, SocialAccount] = {}
+        for a in self.accounts:
+            indexed.setdefault(a.key(), a)
+        return indexed
+
+
+# --- Follow-change detection (Deliverable C) ---------------------------------
+
+# Structured internal event kinds. These are engine-internal facts, NOT user
+# alerts (alerting is a later deliverable). Stored so later intelligence modules
+# and the eventual alerting layer read a durable history rather than recomputing.
+FOLLOW_EVENT_TYPES: frozenset[str] = frozenset({"new_follow", "unfollow"})
+
+# What kind of profile attribute changed between two snapshots of the same account.
+PROFILE_CHANGE_FIELDS: frozenset[str] = frozenset(
+    {"handle", "display_name", "bio", "verified"}
+)
+
+
+class FollowEvent(BaseModel):
+    """A detected change in *who* a KOL follows: a new follow or an unfollow.
+
+    Engine-internal and platform-neutral. `account` carries the full metadata of
+    the counterparty at detection time so downstream modules (crypto detection,
+    scoring — later deliverables) don't have to re-fetch. No alert is implied.
+    """
+
+    event_type: str          # "new_follow" | "unfollow"
+    platform: str
+    kol_handle: str          # the watched KOL this event is about
+    account_key: str         # stable identity of the followed/unfollowed account
+    account: SocialAccount   # snapshot of that account's metadata at detection
+    detected_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("event_type")
+    @classmethod
+    def _validate_event_type(cls, v: str) -> str:
+        if v not in FOLLOW_EVENT_TYPES:
+            raise ValueError(
+                f"unknown follow event type {v!r}; expected one of {sorted(FOLLOW_EVENT_TYPES)}"
+            )
+        return v
+
+
+class ProfileChange(BaseModel):
+    """A detected change to an *already-followed* account's profile attributes
+    (handle rename, display-name/bio edit, verification gained/lost).
+
+    Recorded for future intelligence modules; not an alert. `account_key` is the
+    stable identity (platform_id where available) so a handle rename is still
+    tracked as the same account rather than an unfollow+new-follow pair."""
+
+    platform: str
+    kol_handle: str          # the watched KOL whose following list this was seen in
+    account_key: str
+    field: str               # one of PROFILE_CHANGE_FIELDS
+    old_value: str | None = None
+    new_value: str | None = None
+    detected_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("field")
+    @classmethod
+    def _validate_field(cls, v: str) -> str:
+        if v not in PROFILE_CHANGE_FIELDS:
+            raise ValueError(
+                f"unknown profile-change field {v!r}; expected one of {sorted(PROFILE_CHANGE_FIELDS)}"
+            )
+        return v
+
+
+class SnapshotDiff(BaseModel):
+    """The full result of comparing a previous snapshot to a current one.
+
+    Platform-neutral and pure data — the diff engine (`services/social/diff.py`)
+    produces it, and callers decide what to persist. `is_baseline` is True when
+    there was no previous snapshot: everything is "unchanged from unknown", so we
+    emit NO new-follow events (a first observation is not a follow *event*).
+    """
+
+    platform: str
+    kol_handle: str
+    new_follows: list[SocialAccount] = Field(default_factory=list)
+    unfollows: list[SocialAccount] = Field(default_factory=list)
+    unchanged: list[SocialAccount] = Field(default_factory=list)
+    profile_changes: list[ProfileChange] = Field(default_factory=list)
+    is_baseline: bool = False
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.new_follows or self.unfollows or self.profile_changes)
+
+    def events(self) -> list[FollowEvent]:
+        """Materialize the follow/unfollow events implied by this diff. A baseline
+        diff yields none, so establishing the first snapshot never floods the log
+        with 'new follow' events for the KOL's entire existing following list."""
+        out: list[FollowEvent] = []
+        if self.is_baseline:
+            return out
+        for acct in self.new_follows:
+            out.append(FollowEvent(
+                event_type="new_follow", platform=self.platform,
+                kol_handle=self.kol_handle, account_key=acct.key(), account=acct,
+            ))
+        for acct in self.unfollows:
+            out.append(FollowEvent(
+                event_type="unfollow", platform=self.platform,
+                kol_handle=self.kol_handle, account_key=acct.key(), account=acct,
+            ))
+        return out
 
 
 class ProviderCapabilities(BaseModel):

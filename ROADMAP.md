@@ -677,6 +677,112 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### M23 — KOL Intelligence: X (Twitter) follow-graph monitoring → analysis pipeline
+
+- **Goal:** Detect when tracked KOLs (key opinion leaders) follow **new** X accounts, extract any
+  crypto project/contract references from those newly-followed accounts, run them through the
+  existing rug/alpha pipeline, and emit structured alerts — including **cluster** events when
+  several KOLs converge on the same project inside a time window. Turns "who the smart money is
+  starting to watch" into an early, pre-liquidity alpha signal metadata can't see.
+- **Why it matters:** Every existing signal is *on-chain and reactive* — it needs the token to
+  already exist with holders/liquidity. KOL follow-graph movement is a *leading social* signal
+  that often precedes a launch or a pump. Clustering (N KOLs following the same account within
+  a window) is the strongest form and the whole reason to build the follow-graph, not just
+  per-account alerts.
+- **Deliverables (in order, incremental — each independently testable and shippable):**
+  - **A. KOL watchlist (config-driven data).** A declarative watchlist stored so KOLs are
+    added/removed without touching logic: `display_name`, `x_username`, `tier` (1/2/3),
+    `enabled`. Mirror the existing stdlib-`sqlite3` `watchlist_store.py` pattern (no new
+    dependency for storage); seedable from config. Pure CRUD + a `WatchlistEntry`-style model.
+  - **B. Free X monitoring via Playwright (the one new dependency).** A `kol_x_client` that drives
+    a **persistent authenticated browser context** (reused cookies/session on disk), scrapes a
+    KOL's Following list from the public web UI — **never the paid X API** — with randomized
+    delays, human-like scrolling, and graceful recovery/back-off on transient failures or rate
+    limits. Session and selectors isolated behind this one module so a UI change is a one-file
+    fix. Errors surface as explicit "could not fetch," never a crash or a false "no new follows."
+  - **C. Snapshot & diff engine.** ✅ **Done.** Periodically fetch each enabled KOL's Following set, persist a
+    timestamped snapshot, diff against the prior snapshot, and emit **only newly-followed
+    accounts** (first snapshot establishes a baseline, emits nothing). Snapshots stored via the
+    same sqlite layer; retention configurable.
+    _As built:_ pure diff engine `app/services/social/diff.py` (`diff_snapshots` → `SnapshotDiff`:
+    new/unfollows/unchanged + profile changes, stable-id keyed so a handle rename is a
+    `ProfileChange`, not churn); orchestration in `app/services/kol_monitor.py`
+    (`process_snapshot` diffs against the last *complete* snapshot, persists snapshot → events →
+    profile changes → per-account first/last-seen, and **skips incomplete captures** so an
+    interrupted scrape never reads as a mass unfollow); store readers skip corrupted rows and
+    fall back to the last intact baseline; retention via `settings.kol_snapshot_retain`
+    (`kol_store._prune_snapshots`, always preserving the newest complete baseline). Wired into
+    `kol_watchlist.capture_following`. Covered by `tests/test_kol_diff.py` (24 tests: pure diff,
+    persistence, error recovery, retention, scope guard). Scope stops at persisted follow-change
+    events — no alerting/scoring/clustering/crypto (Deliverables D–H).
+  - **D. Crypto-account detection (reuse, don't reinvent).** For each newly-followed account,
+    scan bio/name/pinned/links for crypto signals: contract addresses (`CA:` and bare) across
+    Solana / Ethereum / Base / Robinhood address shapes, and Pump.fun / DexScreener / Birdeye /
+    GMGN / official-project links. Reuse the existing address-extraction/validation helpers where
+    they exist; obvious non-crypto accounts are dropped early. Yields candidate contract
+    addresses + provenance.
+  - **E. Rug/alpha pipeline integration (zero duplicated analysis).** Feed extracted contract
+    addresses straight into `rug_analyzer.analyze_token_contract()` — which already composes
+    contract detection, `honeypot_sim`, risk `scoring`, and alpha scoring. No analysis logic is
+    reimplemented here; this module only *sources* candidates and *annotates* them with KOL
+    context. Results cached per-token via the existing cache.
+  - **F. KOL Intelligence score (configurable component).** A pure scoring function combining
+    **tier weighting**, **number of distinct KOLs**, **follow recency/timing**, and **cluster
+    strength** into a KOL-intel sub-score. Kept out of the core rug/confidence weights so it
+    augments — never distorts — existing risk/confidence math (same discipline as the M10
+    `honeypot`/`unknown` handling). All weights configurable.
+  - **G. Cluster detection.** Detect ≥N KOLs following the same project/account within a
+    configurable rolling time window; roll individual follows up into a single **KOL Cluster**
+    event with aggregate tier/strength. Window, threshold, and dedupe all configurable.
+  - **H. Alert pipeline (transport-agnostic).** Publish typed, serializable events —
+    `NewKolFollow`, `MultipleKolFollow`, `KolCluster` — through a thin publisher interface with a
+    default log/in-memory sink. Structured so Telegram / Discord / Webhook / UI sinks are added
+    later as adapters with no change to producers (design for it now; don't build the transports).
+- **Files/modules (new, additive — no existing file is rewritten):** `app/services/kol_x_client.py`
+  (Playwright driver + session), `app/services/kol_snapshot.py` (snapshot/diff engine),
+  `app/services/kol_detect.py` (crypto-account detection, reusing address helpers),
+  `app/services/kol_intel.py` (orchestration + KOL-intel scoring + cluster detection),
+  `app/services/kol_store.py` (sqlite: watchlist, snapshots, follow-events — mirrors
+  `watchlist_store.py`), `app/services/alerts.py` (event models + publisher interface),
+  `app/models/` (KOL/event pydantic models). **Touched minimally & additively:**
+  `app/core/config.py` (new `kol_*` settings block), `app/main.py` (register a KOL monitor
+  background loop next to `_watchlist_refresh_loop`, guarded by an enable flag),
+  `requirements.txt` (add `playwright`), docs. `rug_analyzer`/`scoring`/`honeypot_sim` are
+  **consumed, not modified**.
+- **Integration points:** (1) `rug_analyzer.analyze_token_contract()` — the single reuse seam for
+  all contract analysis; (2) existing `cache` service for per-token result caching;
+  (3) the `main.py` `asyncio.create_task` background-loop pattern for scheduling (no new scheduler
+  dependency); (4) the `sqlite3` store pattern from `watchlist_store.py` for persistence;
+  (5) pydantic `BaseSettings` for all config; (6) address-extraction/validation helpers reused by
+  detection (D). The alert publisher (H) is the future seam for Telegram/Discord/Webhook/UI.
+- **Dependencies:** M10 (honeypot sim + full analyze pipeline — done). New external dependency:
+  **Playwright** (browser automation) + a one-time authenticated-session bootstrap. **Blocker:**
+  X login/session must be provisioned out-of-band (persistent cookies); scraping the public UI is
+  brittle by nature and must degrade to "unknown," never a false signal.
+- **Effort:** Large (multi-part; Playwright scraping + scheduler + new scoring + clustering) ·
+  **Risk:** Med–High (X UI changes/anti-bot fragility is the main risk; contained behind
+  `kol_x_client` and explicit-unknown degradation so it never regresses on-chain analysis).
+- **Expected improvement:** Adds a **leading social/alpha** dimension absent from every on-chain
+  signal; cluster events are the flagship. Detection Δ: High for early/pre-liquidity discovery;
+  additive-only to existing risk scoring.
+- **Acceptance criteria:** watchlist add/remove via config only; a KOL following a new crypto
+  account produces a `NewKolFollow` event with a full rug/alpha analysis attached (no duplicated
+  analysis logic); N KOLs on one project within the window produce one `KolCluster` event; all
+  intervals/thresholds/tiers/weights are config-driven; X-fetch failure degrades to explicit
+  unknown with no crash and no false alert; **existing 144 tests stay green (zero regression)**.
+- **Suggested tests:** snapshot-diff (pure: baseline emits nothing, new follow detected, unfollow
+  ignored); crypto-account detection across each address shape + link type, non-crypto dropped;
+  KOL-intel score and cluster-window logic (pure, table-driven); alert-event serialization;
+  Playwright client behind an interface so the scraper is mocked in unit tests (no live network);
+  a regression pass asserting `rug_analyzer`/`scoring` outputs are unchanged.
+- **Documentation (deliverable):** an `docs/`-level write-up covering architecture (module
+  responsibilities + the reuse seam), data flow (KOL → follow diff → detection → analyze → score
+  → alert), scheduler model, sqlite schema (watchlist / snapshots / follow-events / cluster
+  events), extension points (new alert sinks, new address shapes, new KOL tiers), and the future
+  **migration path to official X APIs** should the free-scrape path become untenable.
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.
@@ -703,6 +809,7 @@ ROI = detection/user value per unit effort-and-risk. Enablers rank high because 
 20. **[M20] Technical-debt cleanup** — Small, hygiene.
 21. **[M21] Watchlist improvements** — Small–Medium, usability.
 22. **[M22] Multi-chain** — Large, deferred; breadth not depth.
+23. **[M23] KOL Intelligence (X follow-graph)** — Large, new leading/social+alpha dimension; cluster events are the payoff. Reuses the analyze pipeline, so effort is sourcing+scheduling+scoring, not re-analysis.
 
 ---
 
@@ -749,8 +856,9 @@ Persistent, growing reputation that turns usage into a moat.
 - M18 Persistent deployer reputation
 - M19 Snapshots + trend detection
 - M22 Multi-chain *(optional, only if product direction shifts to breadth)*
+- M23 KOL Intelligence (X follow-graph) *(new leading/social+alpha dimension; **blocker:** provision a persistent X session for Playwright)*
 
-**Theme:** the analyzer gets smarter the more it's used, on a single chain, with no external data dependency.
+**Theme:** the analyzer gets smarter the more it's used — on-chain reputation that compounds, plus a leading social signal (M23) that fires before liquidity exists.
 
 ---
 
@@ -764,6 +872,7 @@ Persistent, growing reputation that turns usage into a moat.
 | Per-wallet holdings endpoint unconfirmed | M16 | API probe against Blockscout for this chain |
 | Locker registry empty | M13 (+ M8 quality) | Populate confirmed locker addresses |
 | Labeled rug/non-rug dataset absent | M7 weight back-testing | Accumulate via M19 snapshots, then calibrate |
+| No authenticated X session for scraping | M23 | Provision persistent cookies out-of-band; store the browser context on disk for reuse |
 
 ---
 
