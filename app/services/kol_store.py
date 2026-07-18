@@ -301,6 +301,31 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_kol_intel_events "
         "ON kol_intel_events (platform, account_key, id)"
     )
+    # --- Deliverable H: notification delivery log ----------------------------
+    # One row per (event, destination) delivery attempt: status, timestamp, and the
+    # error message on failure. The (event_key, destination) pair is UNIQUE so a
+    # replayed/duplicate event is not delivered twice to the same destination — the
+    # dedupe seam for the notification layer. Append-only audit; never updated.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notification_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_key TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT,
+            attempted_at TEXT NOT NULL,
+            UNIQUE (event_key, destination)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_deliveries "
+        "ON notification_deliveries (platform, account_key, id)"
+    )
     conn.commit()
     _CONN = conn
     return conn
@@ -1341,6 +1366,80 @@ def list_intel_events(
             detected_at=r["detected_at"], payload=payload,
         ))
     return out
+
+
+# --- Deliverable H: notification delivery log --------------------------------
+
+
+def was_delivered(event_key: str, destination: str) -> bool:
+    """Whether this (event, destination) pair was already delivered successfully.
+
+    The notification layer's dedupe check: a replayed event never delivers twice to
+    the same destination. Only a `sent` row counts — a prior `failed` attempt may be
+    retried."""
+    with _LOCK:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT 1 FROM notification_deliveries "
+            "WHERE event_key = ? AND destination = ? AND status = 'sent' LIMIT 1",
+            (event_key, destination),
+        ).fetchone()
+    return row is not None
+
+
+def record_delivery(
+    *, event_key: str, event_type: str, platform: str, account_key: str,
+    destination: str, status: str, error: str | None = None, when: str | None = None,
+) -> None:
+    """Record one delivery attempt (sent/failed) with its timestamp + any error.
+
+    Append-only audit. UNIQUE(event_key, destination) means a retried attempt after a
+    failure REPLACEs the failed row (so a later success supersedes it) rather than
+    piling up duplicates."""
+    with _LOCK:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO notification_deliveries "
+            "(event_key, event_type, platform, account_key, destination, status, error, attempted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(event_key, destination) DO UPDATE SET "
+            "status=excluded.status, error=excluded.error, attempted_at=excluded.attempted_at, "
+            "event_type=excluded.event_type, platform=excluded.platform, account_key=excluded.account_key",
+            (event_key, event_type, platform.strip().lower(), account_key,
+             destination, status, error, when or _now()),
+        )
+        conn.commit()
+
+
+def list_deliveries(
+    platform: str | None = None, account_key: str | None = None, *,
+    destination: str | None = None, status: str | None = None, limit: int = 200,
+) -> list[dict]:
+    """Recent delivery attempts, newest first. Optional filters. Returns plain dicts
+    (the delivery log is an audit surface, not a domain model)."""
+    with _LOCK:
+        conn = _connect()
+        clauses: list[str] = []
+        params: list = []
+        if platform is not None:
+            clauses.append("platform = ?")
+            params.append(platform.strip().lower())
+        if account_key is not None:
+            clauses.append("account_key = ?")
+            params.append(account_key)
+        if destination is not None:
+            clauses.append("destination = ?")
+            params.append(destination)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        params.append(int(limit))
+        rows = conn.execute(
+            f"SELECT * FROM notification_deliveries {where}ORDER BY id DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def reset_for_tests(db_path: str | None = None) -> None:

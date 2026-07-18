@@ -45,7 +45,7 @@ from app.models.kol import (
     ProjectIntelligence,
     SocialAccount,
 )
-from app.services import kol_store
+from app.services import kol_store, notifications
 from app.services.social import kol_scoring
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,13 @@ def _persist_and_emit(intel: ProjectIntelligence, previous: ProjectIntelligence 
 
     events = _build_events(intel, previous)
     kol_store.save_intel_events(events)
+
+    # Deliverable H: hand the just-persisted events to the notification layer. It
+    # consumes these events + this already-computed intelligence (no recompute),
+    # applies the configured forwarding rules, and delivers to the configured sinks.
+    # No-ops when disabled, and fully failure-isolated — a delivery failure can never
+    # interrupt the correlation/capture that produced these events.
+    notifications.dispatch_events(events, intel)
 
     logger.info(
         "intelligence updated %s:%s score=%s (%s) kols=%s cluster=%s",

@@ -301,6 +301,29 @@ class Settings(BaseSettings):
     # <= 0 disables pruning (keep all). History powers future analytics/AI timelines.
     kol_intel_history_retain: int = 200
 
+    # --- Deliverable H: notification & delivery layer ------------------------
+    # Master switch. Off by default — the whole notification layer is opt-in and
+    # inert until enabled, exactly like the KOL crypto/scoring switches. When off,
+    # events are still produced + persisted; they're simply not delivered.
+    notify_enabled: bool = False
+    # Destinations to deliver through, by name. Only the roadmap sinks exist today:
+    # "log" (emit via the app logger) and "memory" (in-process buffer — a UI feed /
+    # test sink). Telegram/Discord/webhook are future adapters: register one in
+    # `notifications._PROVIDER_FACTORIES` and add its name here, no producer change.
+    notify_providers: list[str] = ["log"]
+    # Forwarding rules (all config-driven). An intelligence event is delivered only
+    # when its project's KOL Intelligence Score, score-confidence band, and distinct
+    # KOL (cluster) size ALL clear these bars AND its type is in the forward list.
+    notify_min_score: int = 0
+    notify_min_confidence: str = "very_low"   # one of CONFIDENCE_LEVELS (very_low..very_high)
+    notify_min_cluster_size: int = 0
+    # Event types to forward. Defaults to the alert-worthy convergence signals (the
+    # flagship cluster + momentum events), not the every-update bookkeeping ones.
+    # An empty list forwards NO events (delivery off without flipping the switch).
+    notify_event_types: list[str] = [
+        "kol_cluster_detected", "high_conviction_cluster", "project_momentum_detected",
+    ]
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

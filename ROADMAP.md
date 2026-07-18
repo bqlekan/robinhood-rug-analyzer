@@ -697,16 +697,42 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   a window) is the strongest form and the whole reason to build the follow-graph, not just
   per-account alerts.
 - **Deliverables (in order, incremental — each independently testable and shippable):**
-  - **A. KOL watchlist (config-driven data).** A declarative watchlist stored so KOLs are
+  - **A. KOL watchlist (config-driven data).** ✅ **Done.** A declarative watchlist stored so KOLs are
     added/removed without touching logic: `display_name`, `x_username`, `tier` (1/2/3),
     `enabled`. Mirror the existing stdlib-`sqlite3` `watchlist_store.py` pattern (no new
     dependency for storage); seedable from config. Pure CRUD + a `WatchlistEntry`-style model.
-  - **B. Free X monitoring via Playwright (the one new dependency).** A `kol_x_client` that drives
+    _As built:_ stdlib-`sqlite3` store `app/services/kol_store.py` (mirrors `watchlist_store.py`,
+    lock-guarded, at `kol_db_path`) with the `kols` table (`(platform, handle)` key, `tier`,
+    `enabled`) + pure CRUD (`upsert_kol` / `get_kol` / `list_kols` / `delete_kol`, `enabled` toggled
+    via `upsert_kol`);
+    `KolEntry` and the platform-neutral `SocialAccount` models in `app/models/kol.py`; a
+    provider-registry seam (`app/services/social/registry.py` + `base.py`) so a new platform is a
+    registered provider, not a logic change; orchestration in `app/services/kol_watchlist.py`,
+    seedable from `settings.kol_watchlist_seed`, gated by `settings.kol_intel_enabled`. Covered by
+    `tests/test_kol_watchlist.py`. Scope stops at watchlist CRUD + models — no scraping/diff/scoring.
+  - **B. Free X monitoring via Playwright (the one new dependency).** ✅ **Done.** A client that drives
     a **persistent authenticated browser context** (reused cookies/session on disk), scrapes a
     KOL's Following list from the public web UI — **never the paid X API** — with randomized
     delays, human-like scrolling, and graceful recovery/back-off on transient failures or rate
     limits. Session and selectors isolated behind this one module so a UI change is a one-file
     fix. Errors surface as explicit "could not fetch," never a crash or a false "no new follows."
+    _As built:_ three isolated modules under `app/services/social/` — `x_session.py` (Playwright
+    `launch_persistent_context` rooted at `settings.x_user_data_dir` so cookies/auth persist across
+    runs; an `async with XSession() as page` context manager with an **injectable `context_factory`**
+    so tests exercise session/auth logic with zero Playwright dependency; **never bypasses auth**),
+    `x_scraper.py` (`scroll_and_collect` drives X's virtualized infinite-scroll Following list,
+    accumulating rendered handles per step, stopping on `x_scroll_stable_rounds` consecutive empty
+    scrolls or the `x_scroll_max_rounds`/`x_following_max` caps — returning `ScrapeResult.complete=False`
+    when a cap cut it short, so a truncated scrape is never mistaken for a full set), and
+    `x_provider.py` (`XProvider.fetch_following` orchestrates session + scraper into a
+    `FollowingSnapshot`, translating failures into typed `ProviderError` subclasses). `errors.py`
+    adds `SessionExpiredError` / `AuthUnavailableError` (both `retryable=False` — a human must
+    reauthenticate) over the Deliverable-A `ProviderError` (carrying `retryable` / `retry_after_seconds`
+    for a future scheduler to back off on). Config: `x_user_data_dir`, `x_headless`, `x_scroll_pause_ms`,
+    `x_scroll_max_rounds`, `x_scroll_stable_rounds`, `x_following_max`. Wired into
+    `kol_watchlist.capture_following`; `playwright` added to `requirements.txt` (the one new dependency).
+    Covered by `tests/test_x_provider.py`. Scope stops at fetching a Following snapshot — no diff
+    (Deliverable C).
   - **C. Snapshot & diff engine.** ✅ **Done.** Periodically fetch each enabled KOL's Following set, persist a
     timestamped snapshot, diff against the prior snapshot, and emit **only newly-followed
     accounts** (first snapshot establishes a baseline, emits nothing). Snapshots stored via the
@@ -795,10 +821,30 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     Tier-1 minimum, conviction score); the engine persists a `kol_cluster_history` row per detection
     and emits internal `kol_cluster_detected` / `high_conviction_cluster` events (NOT user alerts —
     transports remain Deliverable H).
-  - **H. Alert pipeline (transport-agnostic).** Publish typed, serializable events —
-    `NewKolFollow`, `MultipleKolFollow`, `KolCluster` — through a thin publisher interface with a
-    default log/in-memory sink. Structured so Telegram / Discord / Webhook / UI sinks are added
-    later as adapters with no change to producers (design for it now; don't build the transports).
+  - **H. Alert pipeline (transport-agnostic).** ✅ **Done.** Publish typed, serializable events
+    through a thin publisher interface with a default log/in-memory sink. Structured so Telegram /
+    Discord / Webhook / UI sinks are added later as adapters with no change to producers.
+    _As built:_ `app/services/notifications.py` — a `NotificationProvider` ABC (`name` + `send`) with
+    the two roadmap sinks: `LogNotificationProvider` (`"log"`, default) and
+    `MemoryNotificationProvider` (`"memory"`, in-process buffer for a UI feed / tests). New transports
+    register a factory in `_PROVIDER_FACTORIES` + a name in `settings.notify_providers` — **producers
+    never change**. The layer **consumes** the Deliverable-F `kol_intel_events` the engine already
+    persisted (it generates no intelligence — no scoring, no analysis, no event creation): the single
+    call-in `dispatch_events(events, intel)` is invoked from `kol_intel_engine._persist_and_emit`
+    right after the events are saved, filters them by fully config-driven forwarding rules
+    (`notify_min_score`, `notify_min_confidence`, `notify_min_cluster_size`, `notify_event_types` — all
+    AND-ed against the already-computed `ProjectIntelligence`), skips any (event, destination) pair
+    already delivered, and records every attempt in the new `notification_deliveries` table
+    (status/timestamp/destination/error; `UNIQUE(event_key, destination)` is the dedupe seam so a
+    replayed event never double-delivers, while a prior `failed` attempt can be retried). Gated by
+    `settings.notify_enabled` (**off by default** — the whole layer is inert out of the box, like the
+    other KOL switches) and **fully failure-isolated**: a bad provider or store write is logged +
+    recorded and the loop continues, so a delivery failure can NEVER interrupt the capture/analysis
+    that produced the events. Covered by `tests/test_notifications.py` (24 tests: successful delivery +
+    `sent` record, failed delivery isolation + `failed` record, one bad provider never blocks others,
+    disabled/empty-provider/empty-type no-ops, every threshold rule incl. AND-ing, dedupe incl.
+    per-destination + retry-after-failure, and the reuse discipline — dispatch writes no intelligence
+    and an engine-path delivery failure never sinks a capture).
 - **Files/modules (new, additive — no existing file is rewritten):** `app/services/kol_x_client.py`
   (Playwright driver + session), `app/services/kol_snapshot.py` (snapshot/diff engine),
   `app/services/kol_detect.py` (crypto-account detection, reusing address helpers),

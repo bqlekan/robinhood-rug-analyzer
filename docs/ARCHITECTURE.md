@@ -74,7 +74,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Persistence Layer** | `watchlist_store` (wallets), `kol_store` (KOL) | Two independent stdlib-`sqlite3` stores, each lock-guarded. |
 | **Configuration System** | `core/config.py` | One pydantic `BaseSettings`; every threshold/weight/toggle is env-overridable config. |
 | **Scheduler** | `main.py` lifespan | One asyncio background loop (`_watchlist_refresh_loop`). KOL captures have no scheduler yet. |
-| **Notification Layer** | *(planned, Deliverable H)* | No transport exists; events are persisted internally awaiting a future publisher. |
+| **Notification Layer** | `notifications.py` (Deliverable H) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers (`log`, `memory`). Opt-in, rule-filtered, deduped, failure-isolated. See §6.1. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
 
 See [§17](#17-mermaid-diagrams) for the overall architecture diagram.
@@ -130,7 +130,8 @@ flowchart TD
     XK --> SC[kol_scoring.score_project + detect_cluster]
     SC --> PI[ProjectIntelligence: score, evidence,<br/>contributors, cluster, correlation, timeline]
     PI --> EV[Internal events: kol_score_updated,<br/>kol_cluster_detected, momentum, ...]
-    EV --> FUT[Future: Notification Layer → AI Reasoning]
+    EV --> NT[Notification Layer: dispatch_events<br/>filter → deliver → record]
+    NT -.-> FUT[Future: AI Reasoning]
 ```
 
 Key properties of the KOL flow:
@@ -143,9 +144,11 @@ Key properties of the KOL flow:
   stored analysis summary rather than re-running it.
 - **Incremental** — `update_project_intelligence` fingerprints its inputs and
   short-circuits when nothing changed, skipping rescore/history/events.
-- **Internal-only** — the final stage persists engine-internal events. No
-  delivery transport exists yet (Deliverable H); the arrow to "Notification →
-  AI" is planned, not built.
+- **Delivery is decoupled** — the engine persists engine-internal events, then
+  hands them to the notification layer (Deliverable H, §6.1), which filters and
+  delivers to configured sinks. Delivery is opt-in and failure-isolated, so it
+  never affects the correlation/capture path. The arrow to "AI Reasoning" is
+  still planned, not built.
 
 ---
 
@@ -286,10 +289,17 @@ frontend; owns the lifespan-scoped background scheduler.
 
 **`app/services/kol_intel_engine.py`** — scoring + correlation orchestrator (Deliverable F).
 - Public: `update_project_intelligence(platform, account_key, *, project_handle=None, force=False)`, `process_new_project_follows(platform, accounts, *, project_keys=None)`.
-- Dependencies: `kol_store`, `social.kol_scoring`.
+- Dependencies: `kol_store`, `social.kol_scoring`, `notifications` (dispatch only).
 - Config: `kol_score_enabled`, `kol_momentum_min_new_kols`, plus everything `kol_scoring` reads.
-- Behavior: build contributors from `list_kols_following` -> reuse best classification + latest analysis summary -> fingerprint inputs (short-circuit if unchanged) -> `detect_cluster` -> `score_project` -> `detect_cluster` again with the score (to tag `high_conviction`) -> assemble `ProjectIntelligence` -> persist + emit internal events.
+- Behavior: build contributors from `list_kols_following` -> reuse best classification + latest analysis summary -> fingerprint inputs (short-circuit if unchanged) -> `detect_cluster` -> `score_project` -> `detect_cluster` again with the score (to tag `high_conviction`) -> assemble `ProjectIntelligence` -> persist + emit internal events -> `notifications.dispatch_events` (Deliverable H, best-effort).
 - Failure modes: never raises out of the public entrypoints (logged/swallowed).
+
+**`app/services/notifications.py`** — notification & delivery layer (Deliverable H).
+- Public: `dispatch_events(events, intel)`, `register_provider(provider)`, `NotificationProvider` ABC, `LogNotificationProvider`, `MemoryNotificationProvider`, `reset_for_tests()`.
+- Dependencies: `kol_store` (delivery log + dedupe), `models.kol`.
+- Config: `notify_enabled`, `notify_providers`, `notify_min_score`, `notify_min_confidence`, `notify_min_cluster_size`, `notify_event_types`.
+- Behavior: consume the just-persisted intel events -> filter by config rules against the given `ProjectIntelligence` -> skip already-delivered (event, destination) pairs -> deliver via each provider -> record every attempt in `notification_deliveries`. Generates no intelligence.
+- Failure modes: no-ops when disabled; a failing provider or store write is logged, recorded, and swallowed — never propagates to the caller.
 
 ### 3.6 Social provider package (`app/services/social/`)
 
@@ -382,13 +392,13 @@ for the full rendered graph.
 
 ## 6. Event Pipeline
 
-The event system today is **append-only, engine-internal persistence** — a
-durable audit trail and timeline that later stages (a notification publisher,
-then an AI reasoning layer) will consume. **There is no delivery transport yet**
-(no Telegram/Discord/webhook/UI sink, no dispatcher, no notification settings).
-This was confirmed by a repo-wide search: the only matches for
-notify/telegram/discord/webhook/transport are in docstrings describing the
-future Deliverable H.
+The event system is **append-only, engine-internal persistence** — a durable
+audit trail and timeline. As of **Deliverable H**, the intelligence events are
+also **consumed by a notification & delivery layer** (`services/notifications.py`,
+§6.1) that forwards alert-worthy events to configured destinations. Delivery is
+opt-in (`settings.notify_enabled`, off by default) and fully isolated from the
+producers — the event tables and producers are unchanged; the layer only reads
+them. An AI reasoning layer remains the future consumer.
 
 ### Produced events (three disjoint vocabularies)
 
@@ -403,7 +413,7 @@ All are validated frozensets in `app/models/kol.py`:
 ### Publishers and subscribers
 
 - **Publishers:** `kol_monitor` (follow events), `kol_crypto_pipeline` (crypto events), `kol_intel_engine` (intel events). Each writes through `kol_store` save-* functions.
-- **Subscribers:** none at delivery time. The **consumers** are read-only: `kol_intel_engine` reads `crypto_events` (via `latest_analysis_summary`) to reuse analysis, and future stages will read `kol_intel_events` + `ProjectIntelligence`.
+- **Subscribers:** the **notification layer** (`notifications.dispatch_events`) consumes `kol_intel_events` — invoked by `kol_intel_engine._persist_and_emit` right after the events are saved, with the just-computed `ProjectIntelligence` as filtering context. Other consumers are read-only: `kol_intel_engine` reads `crypto_events` (via `latest_analysis_summary`) to reuse analysis; a future AI stage will read `kol_intel_events` + `ProjectIntelligence`.
 
 ### Event lifecycle
 
@@ -412,8 +422,9 @@ flowchart LR
     P[Producer stage] --> V[Model validates event_type<br/>against frozenset]
     V --> S[kol_store.save_*_events<br/>append-only, JSON payload]
     S --> T[(SQLite event table)]
-    T --> R[Read by correlation engine<br/>and future consumers]
-    R -. planned .-> N[Notification publisher<br/>Deliverable H]
+    T --> R[Read by correlation engine<br/>and consumers]
+    R --> N[Notification layer<br/>Deliverable H - dispatch_events]
+    N --> D[(notification_deliveries<br/>audit + dedupe)]
     N -. planned .-> AI[AI reasoning layer]
 ```
 
@@ -423,9 +434,38 @@ when that cluster clears the conviction bar, and `project_momentum_detected` whe
 the distinct-KOL count grows by `>= kol_momentum_min_new_kols` (and there was a
 prior score).
 
+### 6.1 Notification & delivery layer (Deliverable H)
+
+`services/notifications.py` is the transport layer. It **consumes** the
+`kol_intel_events` the engine already produced and delivers the alert-worthy ones
+to configured destinations. It generates no intelligence — no scoring, no
+analysis, no event creation — it only reads the already-computed
+`ProjectIntelligence` to decide what to forward.
+
+- **Provider abstraction:** `NotificationProvider` ABC (`name` + `send`). Two
+  providers ship, exactly the roadmap set: `LogNotificationProvider` (`"log"`,
+  the default, logs the alert) and `MemoryNotificationProvider` (`"memory"`, an
+  in-process buffer for a UI feed / tests). New transports (Telegram/Discord/
+  webhook) register a factory in `_PROVIDER_FACTORIES` and a name in
+  `settings.notify_providers` — producers never change.
+- **Forwarding rules (all config):** `notify_enabled` (master switch, off by
+  default), `notify_min_score`, `notify_min_confidence`, `notify_min_cluster_size`,
+  and `notify_event_types` (which event types to forward). All AND-ed, judged
+  against the event's `ProjectIntelligence`.
+- **Entry point:** `dispatch_events(events, intel)`, called once from
+  `kol_intel_engine._persist_and_emit` after the events are persisted. No-ops when
+  disabled; **fully failure-isolated** — a failing provider or store write is
+  logged + recorded and the loop continues, so a delivery failure can never
+  interrupt the capture/analysis that produced the events.
+- **Persistence + dedupe:** every attempt is recorded in `notification_deliveries`
+  (event_key, event_type, platform, account_key, destination, status, error,
+  attempted_at). `UNIQUE(event_key, destination)` + the `was_delivered` check mean
+  a replayed event is never delivered twice to the same destination; a prior
+  `failed` attempt may still be retried.
+
 ### Future extension points
 
-- **Notification (Deliverable H):** add a thin publisher interface with adapters (Telegram/Discord/webhook/UI). It reads the existing event tables — producers do not change. Design the payloads are already self-describing JSON to support this.
+- **New transports:** add a `NotificationProvider` subclass + registry entry (see §6.1). The layer, rules, dedupe, and audit log are already in place.
 - **AI reasoning:** `ProjectIntelligence` (score + evidence + contributors + cluster + correlation + timeline) is deliberately self-contained so an AI stage can explain a call without rescanning.
 
 ---
@@ -445,7 +485,7 @@ No ORM; JSON columns keep schemas forward-compatible.
 
 Refreshed opportunistically by the `_watchlist_refresh_loop` background task.
 
-### 7b. KOL store — `kol_store.py` (`kol_db_path`, default `data/kol.db`), 11 tables
+### 7b. KOL store — `kol_store.py` (`kol_db_path`, default `data/kol.db`), 13 tables
 
 | Table | Primary key | Purpose | Retention |
 |---|---|---|---|
@@ -461,6 +501,7 @@ Refreshed opportunistically by the `_watchlist_refresh_loop` background task.
 | `kol_intel_score_history` | `id` (autoinc) | score timeline per project | pruned to `kol_intel_history_retain` (default 200) |
 | `kol_cluster_history` | `id` (autoinc) | cluster formations per project | pruned to `kol_intel_history_retain` |
 | `kol_intel_events` | `id` (autoinc) | intel event timeline | append-only |
+| `notification_deliveries` | `id` (autoinc), **UNIQUE(event_key, destination)** | Deliverable H delivery log: status, timestamp, destination, error | append-only audit; retry replaces a prior `failed` for the same (event, destination) |
 
 ### Relationships
 
@@ -477,6 +518,7 @@ erDiagram
     kol_intel_scores ||--o{ kol_intel_score_history : "timeline"
     kol_intel_scores ||--o{ kol_cluster_history : "clusters"
     kol_intel_scores ||--o{ kol_intel_events : "events"
+    kol_intel_events ||--o{ notification_deliveries : "delivered as"
 ```
 
 The pivot from **per-KOL** rows to a **per-project** view is the correlation
@@ -532,12 +574,14 @@ behavior is tuned without touching logic.
 | **KOL scoring** | Score components + tiers | `kol_score_enabled=False`, `kol_tier_weights`, `kol_score_weights`, `kol_confidence_multipliers`, `kol_score_confidence_bands` |
 | **KOL clustering** | Convergence windows | `kol_cluster_min_kols=2`, `kol_cluster_window_hours=72`, `kol_cluster_rapid_*`, `kol_cluster_tier1_min`, `kol_cluster_high_conviction_score=75` |
 | **KOL correlation** | Momentum + retention | `kol_momentum_min_new_kols=1`, `kol_intel_min_actionable_score=40`, `kol_intel_history_retain=200` |
+| **Notifications (H)** | Delivery + forwarding rules | `notify_enabled=False`, `notify_providers=["log"]`, `notify_min_score=0`, `notify_min_confidence="very_low"`, `notify_min_cluster_size=0`, `notify_event_types=[cluster, high_conviction, momentum]` |
 | **LLM (optional)** | Richer lore summaries | `llm_api_key`, `llm_base_url`, `llm_model` (empty = extractive fallback) |
 
 ### Defaults and safety
 
-The three KOL master switches — `kol_intel_enabled`, `kol_crypto_intel_enabled`,
-`kol_score_enabled` — all default to **`False`**. The entire KOL subsystem is
+The KOL master switches — `kol_intel_enabled`, `kol_crypto_intel_enabled`,
+`kol_score_enabled`, and the Deliverable H `notify_enabled` — all default to
+**`False`**. The entire KOL subsystem (now including notification delivery) is
 opt-in and inert out of the box, so it never changes on-chain analysis behavior
 unless explicitly turned on. Likewise the honeypot sim is inert unless a DEX
 router is mapped, and the launchpad registries are empty by design.
@@ -804,10 +848,10 @@ Step-by-step recipes. Each is designed to be additive — no existing file is re
 3. Keep it capped and additive so the total stays 0–100 and reconstructible from evidence.
 
 ### 13.5 Add a new notification destination
-> The transport layer (Deliverable H) does not exist yet — this is the intended shape.
-1. Define a thin publisher interface with a default log/in-memory sink.
-2. Add an adapter (Telegram/Discord/webhook/UI) that reads the existing `kol_intel_events` / `crypto_events` tables — producers do not change.
-3. Map internal event types to user-facing messages; gate delivery behind a new config toggle (default `False`).
+The transport layer exists as of Deliverable H (§6.1). To add a destination:
+1. Subclass `NotificationProvider` in `notifications.py` with a unique `name` and a `send(notification)` that delivers (raise on failure — the engine isolates it).
+2. Register it in `_PROVIDER_FACTORIES` (keyed by `name`).
+3. Add its `name` to `settings.notify_providers`. Producers, rules, dedupe, and the delivery audit log are unchanged — the new sink is picked up automatically.
 
 ### 13.6 Add a new AI provider
 > Planned layer.
@@ -899,11 +943,12 @@ calls `capture_following` per enabled KOL on a cadence, using
 rate budgets. This is the missing driver that turns the wired-but-manual KOL
 pipeline into a continuously running engine.
 
-### Notification Engine (Deliverable H)
-A publisher interface with pluggable adapters (Telegram / Discord / webhook /
-UI). It subscribes to the existing internal event tables and maps event types to
-user-facing alerts — especially `high_conviction_cluster` and
-`project_momentum_detected`. Producers are unchanged; delivery is config-gated.
+### Notification Engine (Deliverable H) — **built**
+Shipped as `services/notifications.py` (§6.1): a `NotificationProvider` interface
+with `log` + `memory` sinks, config-driven forwarding rules, a delivery audit log
+with dedupe, and full failure isolation. Remaining future work here is adapters
+for real transports (Telegram / Discord / webhook / UI), each a `NotificationProvider`
+subclass registered per §13.5 — no producer change.
 
 ### AI Trading Intelligence Engine
 Consumes `ProjectIntelligence` (self-contained score + evidence + contributors +
@@ -969,9 +1014,10 @@ still-internal KOL follow-graph intelligence engine.
 - **KOL Intelligence Score** = capped additive sum of seven config-weighted components, each backed by one piece of `Evidence` (§10.7).
 
 **How events flow.** Producer stages write append-only, self-describing events
-to SQLite (`follow_events`, `crypto_events`, `kol_intel_events`). Nothing
-delivers them yet — a notification publisher and an AI reasoning layer are the
-planned consumers (§6, §16).
+to SQLite (`follow_events`, `crypto_events`, `kol_intel_events`). The notification
+layer (Deliverable H, §6.1) then consumes the intel events and delivers the
+alert-worthy ones to configured sinks — opt-in and failure-isolated. An AI
+reasoning layer remains the planned future consumer (§6, §16).
 
 **How to add features safely.** Everything is additive and config-first: add a
 provider, a signal, a scoring component, an analyzer, or an event by following
