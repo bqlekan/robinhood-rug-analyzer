@@ -413,6 +413,148 @@ class CryptoIntelEvent(BaseModel):
         return v
 
 
+# --- KOL Intelligence scoring & correlation (Deliverable F) ------------------
+
+# Typed cluster kinds. A project can satisfy several at once; the engine records all
+# that apply so downstream reasoning (and a future AI stage) sees every angle. These
+# are engine-internal descriptors, NOT user alerts.
+#   tier_1          — enough Tier-1 KOLs converged (the strongest signal quality)
+#   mixed_tier      — KOLs of differing tiers converged (breadth across the roster)
+#   rapid           — the convergence happened inside the tight rapid window (timing)
+#   high_conviction — the computed KOL Intelligence Score cleared the conviction bar
+CLUSTER_TYPES: tuple[str, ...] = ("tier_1", "mixed_tier", "rapid", "high_conviction")
+
+# Internal intelligence event kinds. Engine-internal facts persisted as a durable
+# timeline — NOT user notifications (transports are Deliverable H). A future AI stage
+# reads these plus the ProjectIntelligence object without recomputing anything.
+KOL_INTEL_EVENT_TYPES: frozenset[str] = frozenset({
+    "kol_score_updated",          # a project's KOL Intelligence Score changed
+    "kol_cluster_detected",       # >= min KOLs converged (any cluster type)
+    "high_conviction_cluster",    # a cluster whose score cleared the conviction bar
+    "project_momentum_detected",  # distinct-KOL count grew since the last score
+    "intelligence_updated",       # umbrella: the correlation object was refreshed
+})
+
+
+class KolContributor(BaseModel):
+    """One KOL's contribution to a project's convergence, with the timing and quality
+    needed to score and explain it. Platform-neutral; `tier` and `tier_weight` make
+    the KOL's influence explicit so evidence can cite it without a second lookup."""
+
+    platform: str
+    kol_handle: str
+    tier: int
+    tier_weight: int = 0
+    followed_at: str                 # when this KOL first followed the project account
+    account_key: str                 # the followed project account's stable key
+
+
+class ClusterInfo(BaseModel):
+    """The convergence/cluster view of a project: who converged, how many, over what
+    span, and which typed cluster kinds apply. Persisted to cluster history so the
+    timeline of how a cluster formed is queryable later (and AI-explainable)."""
+
+    platform: str
+    account_key: str
+    project_handle: str | None = None
+    is_cluster: bool = False
+    cluster_types: list[str] = Field(default_factory=list)  # subset of CLUSTER_TYPES
+    kol_count: int = 0
+    tier_counts: dict[str, int] = Field(default_factory=dict)  # tier(str) -> #KOLs
+    contributors: list[KolContributor] = Field(default_factory=list)
+    first_follow_at: str | None = None
+    latest_follow_at: str | None = None
+    window_hours: float | None = None   # span between first and latest follow
+
+    @field_validator("cluster_types")
+    @classmethod
+    def _validate_cluster_types(cls, v: list[str]) -> list[str]:
+        bad = [t for t in v if t not in CLUSTER_TYPES]
+        if bad:
+            raise ValueError(
+                f"unknown cluster type(s) {bad}; expected from {list(CLUSTER_TYPES)}"
+            )
+        return v
+
+
+class ProjectIntelligence(BaseModel):
+    """The single structured intelligence object for one project account.
+
+    This is the correlation engine's output and the durable unit later stages (and the
+    future AI Trading Intelligence Engine) consume. It is deliberately self-contained:
+    it carries the score, its confidence, the full structured `evidence`, the
+    `contributors` (who + tier + timing), the `cluster` view, a compact `correlation`
+    of the REUSED analysis (rug/risk, never recomputed here), and a `timeline` of prior
+    scores — everything needed to generate an explanation WITHOUT rescanning or
+    recomputing history. Nothing here is a user alert.
+    """
+
+    platform: str
+    account_key: str
+    project_handle: str | None = None
+    # The strongest crypto classification seen among contributors (the project's own
+    # or team account carries the best signal). Drives the crypto_confidence component.
+    classification: str | None = None
+    crypto_confidence: str | None = None    # one of CONFIDENCE_LEVELS
+    score: int = 0                          # 0..100 KOL Intelligence Score
+    confidence: str = "very_low"            # band for the score (CONFIDENCE_LEVELS)
+    evidence: list[Evidence] = Field(default_factory=list)
+    contributors: list[KolContributor] = Field(default_factory=list)
+    cluster: ClusterInfo | None = None
+    # Compact, JSON-able snapshot of the REUSED analysis for correlation/explanation —
+    # e.g. {"analyzed": true, "risk_score": 42, "risk_level": "medium",
+    #        "honeypot": "passed", "alpha_score": null}. Never recomputed here.
+    correlation: dict = Field(default_factory=dict)
+    # Recent prior scores (newest last), for momentum + AI timelines without a re-read.
+    timeline: list[dict] = Field(default_factory=list)
+    kol_count: int = 0
+    updated_at: str = Field(default_factory=utc_now_iso)
+    # Stable hash of the scoring inputs at compute time. When unchanged, the engine
+    # skips rescoring an untouched project (see Deliverable F "Performance").
+    fingerprint: str | None = None
+
+    @field_validator("confidence")
+    @classmethod
+    def _validate_confidence(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in CONFIDENCE_LEVELS:
+            raise ValueError(
+                f"unknown confidence {v!r}; expected one of {list(CONFIDENCE_LEVELS)}"
+            )
+        return v
+
+    @property
+    def is_actionable(self) -> bool:
+        """Whether this intelligence clears the configured actionable-score bar. Read
+        by callers; the threshold itself lives in config, not here."""
+        from app.core.config import settings
+        return self.score >= int(settings.kol_intel_min_actionable_score)
+
+
+class KolIntelEvent(BaseModel):
+    """An engine-internal intelligence fact (score updated / cluster / momentum).
+
+    NOT a user notification — transports (Telegram/Discord/webhook/UI) are Deliverable
+    H. `payload` is a self-describing JSON-able dict so the durable timeline explains
+    itself to later intelligence and the eventual alerter without a re-read."""
+
+    event_type: str                 # one of KOL_INTEL_EVENT_TYPES
+    platform: str
+    account_key: str                # the project account this intelligence is about
+    project_handle: str | None = None
+    detected_at: str = Field(default_factory=utc_now_iso)
+    payload: dict = Field(default_factory=dict)
+
+    @field_validator("event_type")
+    @classmethod
+    def _validate_event_type(cls, v: str) -> str:
+        if v not in KOL_INTEL_EVENT_TYPES:
+            raise ValueError(
+                f"unknown intel event type {v!r}; expected one of {sorted(KOL_INTEL_EVENT_TYPES)}"
+            )
+        return v
+
+
 # --- Watchlist domain model --------------------------------------------------
 
 

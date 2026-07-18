@@ -25,7 +25,7 @@ import logging
 
 from app.core.config import settings
 from app.models.kol import FollowingSnapshot, KolEntry, KolSeed, WatchStatus
-from app.services import kol_crypto_pipeline, kol_monitor, kol_store
+from app.services import kol_crypto_pipeline, kol_intel_engine, kol_monitor, kol_store
 from app.services.social import get_provider, is_supported
 from app.services.social.base import ProviderError
 
@@ -317,11 +317,32 @@ async def capture_following(handle: str, platform: str | None = None) -> Followi
     # can never turn a good capture into a failed sync.
     if diff.new_follows:
         try:
-            await kol_crypto_pipeline.process_new_follows(platform, handle, diff.new_follows)
+            classifications = await kol_crypto_pipeline.process_new_follows(
+                platform, handle, diff.new_follows
+            )
         except Exception:  # noqa: BLE001 — intelligence is additive; capture already succeeded
             logger.exception(
                 "crypto intelligence pipeline errored for %s:%s (capture unaffected)",
                 platform, handle,
             )
+            classifications = []
+
+        # Deliverable F: (re)score the PROJECT accounts these new follows touched,
+        # correlating this KOL's follow with every other KOL's across the roster. Only
+        # accounts the crypto pipeline judged to be crypto projects are scored — an
+        # individual/unknown follow is not a project. Gated by `kol_score_enabled` and
+        # best-effort: `process_new_project_follows` swallows per-project failures, so
+        # scoring can never turn a good capture into a failed sync.
+        project_keys = [c.account_key for c in classifications if c.is_crypto_project]
+        if project_keys:
+            try:
+                kol_intel_engine.process_new_project_follows(
+                    platform, diff.new_follows, project_keys=project_keys
+                )
+            except Exception:  # noqa: BLE001 — intelligence is additive; capture already succeeded
+                logger.exception(
+                    "KOL intelligence engine errored for %s:%s (capture unaffected)",
+                    platform, handle,
+                )
 
     return snapshot

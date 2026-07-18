@@ -225,6 +225,82 @@ class Settings(BaseSettings):
     # profile that lists many addresses can't fan out into an unbounded analysis burst.
     kol_crypto_max_contracts_per_account: int = 5
 
+    # --- KOL Intelligence scoring & correlation (M23 Deliverable F) ----------
+    # Master switch for the scoring + cluster + correlation engine. Off by default:
+    # like the rest of M23 it's opt-in and does no work until enabled. When on, a new
+    # follow of a crypto project triggers (re)scoring of that project across all KOLs.
+    kol_score_enabled: bool = False
+    # Per-tier weighting. The KEY is the KOL tier (as a string, since env/JSON config
+    # keys are strings) and the VALUE is that tier's influence weight. Adding a Tier 4
+    # or re-weighting Tier 2 is a config edit — NEVER a code change, and NEVER a
+    # hardcoded KOL name. A tier missing here contributes the configured default.
+    kol_tier_weights: dict[str, int] = {"1": 40, "2": 25, "3": 12}
+    # Weight applied to a KOL whose tier isn't listed above (unknown/misconfigured
+    # tier). Deliberately low so an unrecognized tier never inflates a score.
+    kol_tier_default_weight: int = 10
+    # KOL Intelligence Score = weighted sum of components below, each contribution
+    # capped, the total capped at 100. Every component that fires produces a piece of
+    # structured Evidence, so no score is opaque. All weights are config-editable.
+    #   kol_convergence   — reward for MULTIPLE distinct KOLs on the same project
+    #                       (per additional KOL beyond the first), the core alpha signal
+    #   tier_quality      — contribution from the summed tier weights of contributors
+    #   crypto_confidence — how confident the crypto classification is (very_high..low)
+    #   analysis_safety   — the project passed analysis / low rug risk (reuse, not recompute)
+    #   cluster_bonus     — bonus when a cluster (see below) is detected
+    #   recency           — bonus for follows landing close together / recently
+    #   alpha             — OPTIONAL: an external alpha score, when one exists (future
+    #                       extensible — contributes nothing while no alpha scorer exists)
+    kol_score_weights: dict[str, int] = {
+        "kol_convergence": 20,     # per additional distinct KOL beyond the first
+        "tier_quality": 1,         # multiplied into summed tier weights (scaled below)
+        "crypto_confidence": 20,   # scaled by the classification confidence band
+        "analysis_safety": 20,     # scaled by (100 - risk_score)/100 when analyzed
+        "cluster_bonus": 15,       # flat, when any cluster type is detected
+        "recency": 10,             # scaled by how tight/recent the follow window is
+        "alpha": 20,               # scaled by external alpha in [0,100] when present
+    }
+    # Divisor applied to the summed tier weights before the `tier_quality` weight, so
+    # tier quality lands on the same 0..~100 component scale as the others. Config so
+    # the scale can be retuned when tier weights change.
+    kol_tier_quality_divisor: int = 1
+    # Maps a crypto-classification confidence band to a 0..1 multiplier for the
+    # `crypto_confidence` component. Config-driven so the influence of "medium" vs
+    # "high" is tunable without code. Bands not listed default to 0.
+    kol_confidence_multipliers: dict[str, float] = {
+        "very_high": 1.0, "high": 0.8, "medium": 0.55, "low": 0.3, "very_low": 0.1,
+    }
+    # Confidence bands for the KOL Intelligence Score itself (0..100), high->low, same
+    # pattern as the crypto confidence bands. A score >= a band's threshold earns it.
+    kol_score_confidence_bands: dict[str, int] = {
+        "very_high": 80, "high": 60, "medium": 40, "low": 20, "very_low": 0,
+    }
+    # --- Cluster detection (config-driven; no hardcoded timing) --------------
+    # Minimum distinct KOLs converging on one project (within the window) to call it a
+    # cluster at all. A single KOL is a follow, not a cluster.
+    kol_cluster_min_kols: int = 2
+    # Rolling time window (hours) over which converging follows count toward one
+    # cluster. Follows spread wider than this don't cluster together. Fully config.
+    kol_cluster_window_hours: float = 72.0
+    # A "rapid" cluster: min KOLs converging inside the tighter rapid window (hours).
+    # Tighter convergence = stronger conviction, hence its own typed cluster.
+    kol_cluster_rapid_window_hours: float = 6.0
+    kol_cluster_rapid_min_kols: int = 2
+    # A "tier-1" cluster: at least this many Tier-1 KOLs among the contributors.
+    kol_cluster_tier1_min: int = 2
+    # A "high-conviction" cluster: the computed KOL Intelligence Score reaches this.
+    kol_cluster_high_conviction_score: int = 75
+    # --- Correlation / momentum thresholds -----------------------------------
+    # A project is "momentum" when its distinct-KOL count grows by at least this many
+    # since the last persisted score (drives the ProjectMomentumDetected event).
+    kol_momentum_min_new_kols: int = 1
+    # Minimum KOL Intelligence Score for a project's correlation object to be treated
+    # as "actionable" intelligence (below this it's persisted as history but flagged
+    # low-conviction). Config so the bar moves without code.
+    kol_intel_min_actionable_score: int = 40
+    # Retention: how many score-history and cluster-history rows to keep per project.
+    # <= 0 disables pruning (keep all). History powers future analytics/AI timelines.
+    kol_intel_history_retain: int = 200
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

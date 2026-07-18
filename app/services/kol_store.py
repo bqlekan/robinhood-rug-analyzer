@@ -32,14 +32,18 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.models.kol import (
+    ClusterInfo,
     CryptoClassification,
     CryptoIntelEvent,
     Evidence,
     ExtractedContract,
     FollowEvent,
     FollowingSnapshot,
+    KolContributor,
     KolEntry,
+    KolIntelEvent,
     ProfileChange,
+    ProjectIntelligence,
     SocialAccount,
 )
 
@@ -207,6 +211,95 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_crypto_events_kol "
         "ON crypto_events (platform, kol_handle, detected_at)"
+    )
+    # --- Deliverable F: KOL intelligence scoring & correlation ---------------
+    # Current KOL Intelligence for one project account (upserted): the score, its
+    # confidence band, the full structured evidence + contributors + cluster +
+    # correlation of the reused analysis, all as JSON so the schema is forward-
+    # compatible and the object is self-describing for the future AI stage. Keyed by
+    # the PROJECT account, NOT a single KOL — this is the cross-KOL correlation unit.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kol_intel_scores (
+            platform TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            project_handle TEXT,
+            classification TEXT,
+            crypto_confidence TEXT,
+            score INTEGER NOT NULL DEFAULT 0,
+            confidence TEXT NOT NULL DEFAULT 'very_low',
+            kol_count INTEGER NOT NULL DEFAULT 0,
+            evidence TEXT NOT NULL DEFAULT '[]',
+            contributors TEXT NOT NULL DEFAULT '[]',
+            cluster TEXT,
+            correlation TEXT NOT NULL DEFAULT '{}',
+            fingerprint TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (platform, account_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kol_intel_scores_score "
+        "ON kol_intel_scores (platform, score)"
+    )
+    # Append-only score history: one row each time a project's score is (re)computed
+    # to a new value. Powers momentum + future historical analytics/AI timelines.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kol_intel_score_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            confidence TEXT NOT NULL,
+            kol_count INTEGER NOT NULL DEFAULT 0,
+            recorded_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kol_score_hist "
+        "ON kol_intel_score_history (platform, account_key, id)"
+    )
+    # Append-only cluster history: a row each time a cluster is (re)detected, with the
+    # typed kinds + membership snapshot as JSON, so how a cluster formed over time is
+    # queryable later without recomputation.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kol_cluster_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            cluster_types TEXT NOT NULL DEFAULT '[]',
+            kol_count INTEGER NOT NULL DEFAULT 0,
+            cluster TEXT NOT NULL DEFAULT '{}',
+            recorded_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kol_cluster_hist "
+        "ON kol_cluster_history (platform, account_key, id)"
+    )
+    # Append-only intelligence events (score updated / cluster / momentum / umbrella).
+    # Engine-internal timeline — NOT user notifications (transports are Deliverable H).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kol_intel_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            project_handle TEXT,
+            detected_at TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kol_intel_events "
+        "ON kol_intel_events (platform, account_key, id)"
     )
     conn.commit()
     _CONN = conn
@@ -912,6 +1005,340 @@ def list_crypto_events(
             account_key=r["account_key"],
             detected_at=r["detected_at"],
             payload=payload,
+        ))
+    return out
+
+
+# --- KOL intelligence persistence (Deliverable F) ----------------------------
+
+
+def best_classification_for_account(platform: str, account_key: str) -> CryptoClassification | None:
+    """The strongest crypto classification recorded for a project account across ALL
+    KOLs who follow it (highest score wins, newest breaks ties). Correlation read:
+    the crypto verdict belongs to the PROJECT, but Deliverable D stored it per-KOL;
+    this picks the most confident view without recomputing anything."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        r = conn.execute(
+            "SELECT * FROM crypto_classifications WHERE platform = ? AND account_key = ? "
+            "ORDER BY score DESC, classified_at DESC LIMIT 1",
+            (p, account_key),
+        ).fetchone()
+    return _row_to_classification(r) if r else None
+
+
+def latest_analysis_summary(platform: str, account_key: str) -> dict | None:
+    """The most recent reused rug-analysis summary for a project account, taken from
+    the Deliverable-D `analysis_completed` event log (across any KOL). Returns the
+    stored payload dict (risk_score/risk_level/etc.) or None if never analyzed. This
+    is how the correlation engine REUSES existing analysis instead of recomputing."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        r = conn.execute(
+            "SELECT payload FROM crypto_events "
+            "WHERE platform = ? AND account_key = ? AND event_type = 'analysis_completed' "
+            "ORDER BY id DESC LIMIT 1",
+            (p, account_key),
+        ).fetchone()
+    if r is None:
+        return None
+    try:
+        return json.loads(r["payload"] or "{}")
+    except (ValueError, TypeError):
+        return None
+
+
+def list_kols_following(platform: str, account_key: str, *, active_only: bool = True) -> list[dict]:
+    """Every watched KOL that follows a given project account, with follow timing.
+
+    This is the cross-KOL correlation read at the heart of Deliverable F: the crypto
+    pipeline stores follows keyed by (kol_handle, account_key); this inverts it to
+    'who follows THIS project'. Each dict carries the KOL handle, their tier (joined
+    from `kols`), and `first_seen`/`last_seen` (the follow timing). Rows for KOLs no
+    longer in the watchlist still return (tier falls back to the stored value / a
+    default) so history stays intact if a KOL is later removed."""
+    p = platform.strip().lower()
+    ak = account_key
+    with _LOCK:
+        conn = _connect()
+        clauses = ["fa.platform = ?", "fa.account_key = ?"]
+        params: list = [p, ak]
+        if active_only:
+            clauses.append("fa.active = 1")
+        rows = conn.execute(
+            f"""
+            SELECT fa.platform, fa.kol_handle, fa.account_key, fa.account,
+                   fa.first_seen, fa.last_seen, fa.active, k.tier AS kol_tier
+            FROM followed_accounts fa
+            LEFT JOIN kols k
+                   ON k.platform = fa.platform AND k.handle = fa.kol_handle
+            WHERE {' AND '.join(clauses)}
+            ORDER BY fa.first_seen ASC
+            """,
+            tuple(params),
+        ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            account = SocialAccount(**json.loads(r["account"] or "{}"))
+        except (ValueError, TypeError):
+            account = SocialAccount(platform=r["platform"], handle=r["account_key"])
+        out.append({
+            "platform": r["platform"],
+            "kol_handle": r["kol_handle"],
+            "account_key": r["account_key"],
+            "account": account,
+            "tier": r["kol_tier"],  # may be None if the KOL was removed from the watchlist
+            "first_seen": r["first_seen"],
+            "last_seen": r["last_seen"],
+            "active": bool(r["active"]),
+        })
+    return out
+
+
+def save_project_intelligence(intel: ProjectIntelligence) -> None:
+    """Upsert the current KOL Intelligence for a project account (one row per project).
+
+    History (score/cluster) is appended separately by the callers below; this row is
+    always the LATEST correlation object. Everything structured is stored as JSON so
+    the object round-trips intact for the future AI stage."""
+    p = intel.platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO kol_intel_scores
+                (platform, account_key, project_handle, classification, crypto_confidence,
+                 score, confidence, kol_count, evidence, contributors, cluster,
+                 correlation, fingerprint, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(platform, account_key) DO UPDATE SET
+                project_handle=excluded.project_handle,
+                classification=excluded.classification,
+                crypto_confidence=excluded.crypto_confidence,
+                score=excluded.score,
+                confidence=excluded.confidence,
+                kol_count=excluded.kol_count,
+                evidence=excluded.evidence,
+                contributors=excluded.contributors,
+                cluster=excluded.cluster,
+                correlation=excluded.correlation,
+                fingerprint=excluded.fingerprint,
+                updated_at=excluded.updated_at
+            """,
+            (
+                p, intel.account_key, intel.project_handle, intel.classification,
+                intel.crypto_confidence, intel.score, intel.confidence, intel.kol_count,
+                json.dumps([e.model_dump() for e in intel.evidence]),
+                json.dumps([c.model_dump() for c in intel.contributors]),
+                json.dumps(intel.cluster.model_dump()) if intel.cluster else None,
+                json.dumps(intel.correlation),
+                intel.fingerprint,
+                intel.updated_at,
+            ),
+        )
+        conn.commit()
+
+
+def get_project_intelligence(platform: str, account_key: str) -> ProjectIntelligence | None:
+    """The current KOL Intelligence object for a project account, or None."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        r = conn.execute(
+            "SELECT * FROM kol_intel_scores WHERE platform = ? AND account_key = ?",
+            (p, account_key),
+        ).fetchone()
+    if r is None:
+        return None
+    try:
+        evidence = [Evidence(**e) for e in json.loads(r["evidence"] or "[]")]
+        contributors = [KolContributor(**c) for c in json.loads(r["contributors"] or "[]")]
+        cluster = ClusterInfo(**json.loads(r["cluster"])) if r["cluster"] else None
+        correlation = json.loads(r["correlation"] or "{}")
+    except (ValueError, TypeError):
+        evidence, contributors, cluster, correlation = [], [], None, {}
+    return ProjectIntelligence(
+        platform=r["platform"],
+        account_key=r["account_key"],
+        project_handle=r["project_handle"],
+        classification=r["classification"],
+        crypto_confidence=r["crypto_confidence"],
+        score=r["score"],
+        confidence=r["confidence"],
+        kol_count=r["kol_count"],
+        evidence=evidence,
+        contributors=contributors,
+        cluster=cluster,
+        correlation=correlation,
+        timeline=list_score_history(r["platform"], r["account_key"], limit=20),
+        fingerprint=r["fingerprint"],
+        updated_at=r["updated_at"],
+    )
+
+
+def list_project_intelligence(
+    platform: str, *, min_score: int = 0, limit: int = 200
+) -> list[ProjectIntelligence]:
+    """Ranked project intelligence (highest score first) for dashboards/analytics."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT account_key FROM kol_intel_scores "
+            "WHERE platform = ? AND score >= ? ORDER BY score DESC, updated_at DESC LIMIT ?",
+            (p, int(min_score), int(limit)),
+        ).fetchall()
+    out: list[ProjectIntelligence] = []
+    for r in rows:
+        intel = get_project_intelligence(p, r["account_key"])
+        if intel is not None:
+            out.append(intel)
+    return out
+
+
+def append_score_history(
+    platform: str, account_key: str, score: int, confidence: str, kol_count: int,
+    when: str | None = None,
+) -> None:
+    """Record one score observation and prune to the configured retention."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO kol_intel_score_history "
+            "(platform, account_key, score, confidence, kol_count, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (p, account_key, int(score), confidence, int(kol_count), when or _now()),
+        )
+        conn.commit()
+    _prune_history("kol_intel_score_history", p, account_key)
+
+
+def list_score_history(platform: str, account_key: str, *, limit: int = 200) -> list[dict]:
+    """Score history for a project, OLDEST first (a timeline ready for AI narration)."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT score, confidence, kol_count, recorded_at "
+            "FROM kol_intel_score_history WHERE platform = ? AND account_key = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (p, account_key, int(limit)),
+        ).fetchall()
+    # Fetched newest-first for the LIMIT, returned oldest-first for a natural timeline.
+    return [
+        {"score": r["score"], "confidence": r["confidence"],
+         "kol_count": r["kol_count"], "recorded_at": r["recorded_at"]}
+        for r in reversed(rows)
+    ]
+
+
+def append_cluster_history(platform: str, cluster: ClusterInfo, when: str | None = None) -> None:
+    """Record one cluster observation and prune to the configured retention."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO kol_cluster_history "
+            "(platform, account_key, cluster_types, kol_count, cluster, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (p, cluster.account_key, json.dumps(cluster.cluster_types),
+             cluster.kol_count, json.dumps(cluster.model_dump()), when or _now()),
+        )
+        conn.commit()
+    _prune_history("kol_cluster_history", p, cluster.account_key)
+
+
+def list_cluster_history(platform: str, account_key: str, *, limit: int = 200) -> list[ClusterInfo]:
+    """Cluster history for a project, oldest first."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT cluster FROM kol_cluster_history "
+            "WHERE platform = ? AND account_key = ? ORDER BY id DESC LIMIT ?",
+            (p, account_key, int(limit)),
+        ).fetchall()
+    out: list[ClusterInfo] = []
+    for r in reversed(rows):
+        try:
+            out.append(ClusterInfo(**json.loads(r["cluster"] or "{}")))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _prune_history(table: str, platform: str, account_key: str) -> None:
+    """Keep only the newest `kol_intel_history_retain` rows for one project in a
+    history table. <= 0 disables pruning. Only called with internal table names."""
+    retain = int(settings.kol_intel_history_retain)
+    if retain <= 0:
+        return
+    with _LOCK:
+        conn = _connect()
+        conn.execute(
+            f"DELETE FROM {table} WHERE platform = ? AND account_key = ? AND id NOT IN "
+            f"(SELECT id FROM {table} WHERE platform = ? AND account_key = ? "
+            f"ORDER BY id DESC LIMIT ?)",
+            (platform, account_key, platform, account_key, retain),
+        )
+        conn.commit()
+
+
+def save_intel_events(events: list[KolIntelEvent]) -> None:
+    """Append intelligence events. Append-only timeline (never updates/deletes)."""
+    if not events:
+        return
+    with _LOCK:
+        conn = _connect()
+        conn.executemany(
+            "INSERT INTO kol_intel_events "
+            "(event_type, platform, account_key, project_handle, detected_at, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (e.event_type, e.platform.strip().lower(), e.account_key,
+                 e.project_handle, e.detected_at, json.dumps(e.payload))
+                for e in events
+            ],
+        )
+        conn.commit()
+
+
+def list_intel_events(
+    platform: str, account_key: str | None = None, *,
+    event_type: str | None = None, limit: int = 200,
+) -> list[KolIntelEvent]:
+    """Recent intelligence events, newest first. Optional account/type filters."""
+    p = platform.strip().lower()
+    with _LOCK:
+        conn = _connect()
+        clauses = ["platform = ?"]
+        params: list = [p]
+        if account_key is not None:
+            clauses.append("account_key = ?")
+            params.append(account_key)
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        params.append(int(limit))
+        rows = conn.execute(
+            f"SELECT * FROM kol_intel_events WHERE {' AND '.join(clauses)} "
+            "ORDER BY id DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+    out: list[KolIntelEvent] = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except (ValueError, TypeError):
+            payload = {}
+        out.append(KolIntelEvent(
+            event_type=r["event_type"], platform=r["platform"],
+            account_key=r["account_key"], project_handle=r["project_handle"],
+            detected_at=r["detected_at"], payload=payload,
         ))
     return out
 

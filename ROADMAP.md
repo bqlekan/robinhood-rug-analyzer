@@ -747,14 +747,47 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     config-driven signals, classification + the weak-signal gate, persistence, analyzer reuse +
     dedup + failure isolation, end-to-end capture hook, scope guard). Scope stops at classification
     + reusing the analyzer — no user alerts, KOL scoring, or clustering (Deliverables F–H).
-  - **F. KOL Intelligence score (configurable component).** A pure scoring function combining
+  - **F. KOL Intelligence score (configurable component).** ✅ **Done** (delivers **G** too — the
+    scorer consumes the cluster, so both shipped together). A pure scoring function combining
     **tier weighting**, **number of distinct KOLs**, **follow recency/timing**, and **cluster
     strength** into a KOL-intel sub-score. Kept out of the core rug/confidence weights so it
     augments — never distorts — existing risk/confidence math (same discipline as the M10
     `honeypot`/`unknown` handling). All weights configurable.
-  - **G. Cluster detection.** Detect ≥N KOLs following the same project/account within a
-    configurable rolling time window; roll individual follows up into a single **KOL Cluster**
-    event with aggregate tier/strength. Window, threshold, and dedupe all configurable.
+    _As built:_ pure, offline scorer + cluster detector in `app/services/social/kol_scoring.py`
+    (`detect_cluster` → `ClusterInfo`; `score_project` → `(score, confidence, evidence)`). The
+    0–100 **KOL Intelligence Score** is a capped, additive sum of config-weighted components
+    (`kol_score_weights`): `kol_convergence` (per additional distinct KOL — the core alpha signal),
+    `tier_quality` (summed config tier weights), `crypto_confidence` (reused classification band),
+    `analysis_safety` (reused rug `risk_score`, **never recomputed**), `cluster_bonus`, `recency`
+    (follow-window tightness), and an **optional** `alpha` hook (fires only if a future alpha scorer
+    supplies one — inert today). Every component that fires emits one structured `Evidence`, so the
+    evidence list reconstructs the score exactly — no opaque math. Correlation orchestration in
+    `app/services/kol_intel_engine.py`: for each project a new follow touches, it correlates every
+    watched KOL following it (cross-KOL read `kol_store.list_kols_following`, inverting the
+    per-KOL follow graph), the best classification seen (`best_classification_for_account`), and the
+    latest reused analysis (`latest_analysis_summary`, read from the Deliverable-D event log) into
+    one self-contained `ProjectIntelligence` object (score + confidence + evidence + contributors +
+    cluster + reused-analysis correlation + score timeline) — everything a future AI stage needs to
+    explain a call without rescanning. Scoring is **incremental**: an input `fingerprint` skips
+    rescoring/history/duplicate-events when nothing changed. New `kol_store` tables (`kol_intel_scores`
+    upsert + `kol_intel_score_history` + `kol_cluster_history` + `kol_intel_events`, JSON payloads,
+    per-project retention via `kol_intel_history_retain`). Wired additively into
+    `kol_watchlist.capture_following` (only accounts the crypto pipeline judged **projects** are
+    scored), gated by `settings.kol_score_enabled` and fully error-swallowing so a good capture never
+    fails. All tiers/weights/windows/thresholds are config (`kol_tier_weights`, `kol_score_weights`,
+    `kol_confidence_multipliers`, `kol_cluster_*`, `kol_momentum_*`) — no hardcoded tiers, timing, or
+    KOL names. Covered by `tests/test_kol_intel_engine.py` (42 tests: pure scorer + evidence
+    reconstruction, config-driven weighting, every cluster type, cross-KOL store reads, end-to-end
+    correlation reusing rug analysis, incremental skip, momentum, history timelines, scope guard).
+  - **G. Cluster detection.** ✅ **Done** (shipped with **F**, above). Detect ≥N KOLs following the
+    same project/account within a configurable rolling time window; roll individual follows up into a
+    single **KOL Cluster** event with aggregate tier/strength. Window, threshold, and dedupe all
+    configurable. _As built:_ `kol_scoring.detect_cluster` de-dupes to distinct KOLs (earliest follow
+    kept), measures the convergence span, and tags typed cluster kinds — `tier_1`, `mixed_tier`,
+    `rapid`, `high_conviction` — all driven by `kol_cluster_*` config (min KOLs, main + rapid windows,
+    Tier-1 minimum, conviction score); the engine persists a `kol_cluster_history` row per detection
+    and emits internal `kol_cluster_detected` / `high_conviction_cluster` events (NOT user alerts —
+    transports remain Deliverable H).
   - **H. Alert pipeline (transport-agnostic).** Publish typed, serializable events —
     `NewKolFollow`, `MultipleKolFollow`, `KolCluster` — through a thin publisher interface with a
     default log/in-memory sink. Structured so Telegram / Discord / Webhook / UI sinks are added
