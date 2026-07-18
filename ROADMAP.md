@@ -7,6 +7,13 @@ This roadmap groups all remaining work into dependency-ordered milestones, highe
 first. Effort is Small (<1 day), Medium (1–3 days), or Large (1 week+). Detection Δ is the
 expected lift in catching real rugs / avoiding false calls.
 
+> **Architecture reference:** for the system *as implemented* (subsystems, data flow,
+> persistence, event pipeline, KOL Intelligence, and extension guides), see
+> [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and its companions
+> [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) and
+> [`docs/DATA_FLOW.md`](./docs/DATA_FLOW.md). Where this roadmap and the code diverge,
+> the architecture doc is authoritative.
+
 ---
 
 ## Current Project Health
