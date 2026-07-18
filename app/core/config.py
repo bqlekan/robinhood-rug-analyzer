@@ -170,6 +170,61 @@ class Settings(BaseSettings):
     # uses Playwright's bundled browser.
     x_browser_executable: str = ""
 
+    # --- Crypto intelligence pipeline (M23 Deliverable D) ---
+    # Master switch for classifying newly-followed accounts and (for confident
+    # crypto projects) invoking the existing rug analyzer. Off by default: like the
+    # rest of M23 it's opt-in and does no background work until enabled.
+    kol_crypto_intel_enabled: bool = False
+    # Minimum weighted signal score for a classification to be trusted enough to act
+    # on (i.e. to hand extracted contracts to the rug analyzer). Scores below this
+    # still classify + persist (as evidence) but are treated as too weak to analyze.
+    # Expressed on the same 0..100 scale the confidence bands below use.
+    kol_crypto_min_score: int = 45
+    # Never classify on a single weak signal: require at least this many independent
+    # corroborating signals before a non-"unknown"/"individual" classification is
+    # allowed. One strong signal (a valid contract address) can satisfy this on its
+    # own (see kol_crypto_strong_signals); weak signals must corroborate each other.
+    kol_crypto_min_signals: int = 2
+    # Confidence band lower bounds on the 0..100 weighted-score scale. A score >= a
+    # band's threshold earns that band. Tunable without code changes; ordered
+    # high->low at read time so overlapping edits still resolve deterministically.
+    kol_crypto_confidence_bands: dict[str, int] = {
+        "very_high": 85,
+        "high": 65,
+        "medium": 45,
+        "low": 25,
+        "very_low": 0,
+    }
+    # Signal weights (0..100 contribution each, summed then capped at 100). Additive,
+    # data-driven, and fully config-editable: add a new signal name here and register
+    # its detector in crypto_signals to extend detection with no logic change. A
+    # "strong" signal (see below) alone can carry a classification; others corroborate.
+    kol_crypto_signal_weights: dict[str, int] = {
+        "contract_address": 55,   # a valid, extractable on-chain address (strongest)
+        "dexscreener": 30,
+        "birdeye": 25,
+        "gmgn": 25,
+        "geckoterminal": 25,
+        "coingecko": 20,
+        "coinmarketcap": 20,
+        "pumpfun": 30,
+        "official_website": 15,
+        "telegram": 15,
+        "discord": 12,
+        "github": 12,
+        "chain_keyword": 10,      # "solana"/"ethereum"/"base"/"robinhood" mention
+        "ca_prefix": 15,          # explicit "CA:" marker in bio/links
+        "ticker_cashtag": 8,      # $TICKER style cashtag
+        "crypto_keyword": 6,      # generic crypto lexicon ("token", "airdrop", ...)
+    }
+    # Signals strong enough that ONE of them satisfies kol_crypto_min_signals. Only a
+    # verifiable, extractable contract address qualifies by default — everything else
+    # must corroborate. Editable so the policy can be tuned without code changes.
+    kol_crypto_strong_signals: list[str] = ["contract_address"]
+    # Cap on how many distinct contracts to hand to the rug analyzer per account, so a
+    # profile that lists many addresses can't fan out into an unbounded analysis burst.
+    kol_crypto_max_contracts_per_account: int = 5
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

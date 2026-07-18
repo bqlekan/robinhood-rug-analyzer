@@ -715,17 +715,38 @@ and M15 toward their upper effort bounds and may require a fallback provider.
     `kol_watchlist.capture_following`. Covered by `tests/test_kol_diff.py` (24 tests: pure diff,
     persistence, error recovery, retention, scope guard). Scope stops at persisted follow-change
     events — no alerting/scoring/clustering/crypto (Deliverables D–H).
-  - **D. Crypto-account detection (reuse, don't reinvent).** For each newly-followed account,
-    scan bio/name/pinned/links for crypto signals: contract addresses (`CA:` and bare) across
-    Solana / Ethereum / Base / Robinhood address shapes, and Pump.fun / DexScreener / Birdeye /
-    GMGN / official-project links. Reuse the existing address-extraction/validation helpers where
-    they exist; obvious non-crypto accounts are dropped early. Yields candidate contract
-    addresses + provenance.
-  - **E. Rug/alpha pipeline integration (zero duplicated analysis).** Feed extracted contract
-    addresses straight into `rug_analyzer.analyze_token_contract()` — which already composes
-    contract detection, `honeypot_sim`, risk `scoring`, and alpha scoring. No analysis logic is
-    reimplemented here; this module only *sources* candidates and *annotates* them with KOL
-    context. Results cached per-token via the existing cache.
+  - **D. Crypto-account detection + rug/alpha integration (reuse, don't reinvent).** ✅ **Done.**
+    For each newly-followed account, scan bio/name/links for crypto signals: contract addresses
+    (`CA:` and bare) across Solana / Ethereum / Base / Robinhood address shapes, and Pump.fun /
+    DexScreener / Birdeye / GMGN / GeckoTerminal / CoinGecko / official-project links. Reuse the
+    existing address-extraction/validation helpers; obvious non-crypto accounts drop out early.
+    Confident crypto projects feed their extracted contracts straight into
+    `rug_analyzer.analyze_token_contract()` (which already composes contract detection,
+    `honeypot_sim`, risk `scoring`, and alpha scoring) — no analysis logic is reimplemented.
+    _As built:_ pure, provider-neutral analyzer stack — `app/services/social/contract_extract.py`
+    (multi-chain address mining + validation via the existing `is_valid_address`; EVM/Robinhood
+    marked analyzable, other chains recorded but `supported=False`, never dropped),
+    `app/services/social/crypto_signals.py` (config-driven signal **registry**: add a weight in
+    `settings.kol_crypto_signal_weights` + register a detector to extend detection with zero logic
+    change; a signal weighted `<=0` is disabled), and `app/services/social/crypto_intel.py`
+    (`classify_account` → `CryptoClassification`: account type + confidence band + weighted score +
+    fired signals + structured `Evidence` + `ExtractedContract`s). Every threshold/weight is config
+    (`kol_crypto_*`): score→confidence bands, `kol_crypto_min_score`, and a corroboration gate
+    (`kol_crypto_min_signals` / `kol_crypto_strong_signals`) that enforces **never classify on a
+    single weak signal** — one strong signal (a valid contract) can stand alone; weak signals must
+    corroborate, else the verdict downgrades to `individual`/`unknown`. Orchestration in
+    `app/services/kol_crypto_pipeline.py` (`process_new_follow(s)`): persists the classification +
+    an append-only internal event log (`crypto_project_detected` / `contract_extracted` /
+    `analysis_completed` / `analysis_failed`) and invokes the rug analyzer for supported contracts
+    through a per-contract TTL cache (dedup across KOLs); analysis is best-effort — one contract's
+    failure is logged as an event, never raised. New tables in `kol_store` (`crypto_classifications`
+    upsert + `crypto_events` audit log, JSON payloads for forward-compat). Wired additively into
+    `kol_watchlist.capture_following` on `diff.new_follows` only (a baseline triggers nothing),
+    gated by `settings.kol_crypto_intel_enabled` and fully swallowing pipeline errors so a good
+    capture never fails. Covered by `tests/test_kol_crypto_intel.py` (25 tests: extraction,
+    config-driven signals, classification + the weak-signal gate, persistence, analyzer reuse +
+    dedup + failure isolation, end-to-end capture hook, scope guard). Scope stops at classification
+    + reusing the analyzer — no user alerts, KOL scoring, or clustering (Deliverables F–H).
   - **F. KOL Intelligence score (configurable component).** A pure scoring function combining
     **tier weighting**, **number of distinct KOLs**, **follow recency/timing**, and **cluster
     strength** into a KOL-intel sub-score. Kept out of the core rug/confidence weights so it

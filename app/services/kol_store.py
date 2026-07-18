@@ -32,6 +32,10 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.models.kol import (
+    CryptoClassification,
+    CryptoIntelEvent,
+    Evidence,
+    ExtractedContract,
     FollowEvent,
     FollowingSnapshot,
     KolEntry,
@@ -154,6 +158,55 @@ def _connect() -> sqlite3.Connection:
             PRIMARY KEY (platform, kol_handle, account_key)
         )
         """
+    )
+    # --- Deliverable D: crypto intelligence tables ---------------------------
+    # Latest classification per followed account (upserted): the account type,
+    # confidence band, weighted score, and the fired signals + evidence + extracted
+    # contracts as JSON. One row per account (the current verdict); the event log
+    # below keeps the history. JSON payloads keep the schema forward-compatible as
+    # the evidence/contract shapes evolve.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS crypto_classifications (
+            platform TEXT NOT NULL,
+            kol_handle TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            account_handle TEXT NOT NULL DEFAULT '',
+            classification TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            score INTEGER NOT NULL DEFAULT 0,
+            signals TEXT NOT NULL DEFAULT '[]',
+            evidence TEXT NOT NULL DEFAULT '[]',
+            contracts TEXT NOT NULL DEFAULT '[]',
+            classified_at TEXT NOT NULL,
+            PRIMARY KEY (platform, kol_handle, account_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_crypto_class_kol "
+        "ON crypto_classifications (platform, kol_handle, classification)"
+    )
+    # Engine-internal crypto-pipeline events (detected/extracted/analyzed/failed).
+    # Append-only audit log — NOT user alerts. `payload` is a self-describing JSON
+    # dict (e.g. the analyzed contract + risk summary) so later intelligence and the
+    # eventual alerter read history rather than recomputing.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS crypto_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            kol_handle TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            detected_at TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_crypto_events_kol "
+        "ON crypto_events (platform, kol_handle, detected_at)"
     )
     conn.commit()
     _CONN = conn
@@ -692,6 +745,175 @@ def _followed_row_to_dict(r: sqlite3.Row) -> dict:
         "last_seen": r["last_seen"],
         "active": bool(r["active"]),
     }
+
+
+# --- Crypto intelligence persistence (Deliverable D) -------------------------
+
+
+def save_classification(kol_handle: str, classification: CryptoClassification) -> None:
+    """Upsert the current crypto classification for a followed account.
+
+    `kol_handle` is the watched KOL whose follow this classification belongs to;
+    `classification.handle` is the followed account itself. One row per
+    (platform, kol_handle, account_key) — the latest verdict. Signals, evidence, and
+    contracts are stored as JSON so the evidence trail is complete and the schema
+    survives model changes. History lives in the crypto_events log."""
+    p, h = _norm(classification.platform, kol_handle)
+    with _LOCK:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO crypto_classifications
+                (platform, kol_handle, account_key, account_handle, classification,
+                 confidence, score, signals, evidence, contracts, classified_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(platform, kol_handle, account_key) DO UPDATE SET
+                account_handle=excluded.account_handle,
+                classification=excluded.classification,
+                confidence=excluded.confidence,
+                score=excluded.score,
+                signals=excluded.signals,
+                evidence=excluded.evidence,
+                contracts=excluded.contracts,
+                classified_at=excluded.classified_at
+            """,
+            (
+                p, h, classification.account_key, classification.handle,
+                classification.classification,
+                classification.confidence,
+                classification.score,
+                json.dumps(classification.signals),
+                json.dumps([e.model_dump() for e in classification.evidence]),
+                json.dumps([c.model_dump() for c in classification.contracts]),
+                classification.classified_at,
+            ),
+        )
+        conn.commit()
+
+
+def get_classification(platform: str, handle: str, account_key: str) -> CryptoClassification | None:
+    """The current classification for one followed account, or None."""
+    p, h = _norm(platform, handle)
+    with _LOCK:
+        conn = _connect()
+        r = conn.execute(
+            "SELECT * FROM crypto_classifications "
+            "WHERE platform = ? AND kol_handle = ? AND account_key = ?",
+            (p, h, account_key),
+        ).fetchone()
+    return _row_to_classification(r) if r else None
+
+
+def list_classifications(
+    platform: str,
+    handle: str,
+    *,
+    classification: str | None = None,
+    limit: int = 5000,
+) -> list[CryptoClassification]:
+    """Stored classifications for a KOL's follows, newest first. Optionally filter by
+    account type (e.g. only 'official' projects)."""
+    p, h = _norm(platform, handle)
+    with _LOCK:
+        conn = _connect()
+        clauses = ["platform = ?", "kol_handle = ?"]
+        params: list = [p, h]
+        if classification:
+            clauses.append("classification = ?")
+            params.append(classification)
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM crypto_classifications WHERE {' AND '.join(clauses)} "
+            "ORDER BY classified_at DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+    return [_row_to_classification(r) for r in rows]
+
+
+def _row_to_classification(r: sqlite3.Row) -> CryptoClassification:
+    try:
+        signals = json.loads(r["signals"] or "[]")
+        evidence = [Evidence(**e) for e in json.loads(r["evidence"] or "[]")]
+        contracts = [ExtractedContract(**c) for c in json.loads(r["contracts"] or "[]")]
+    except (ValueError, TypeError):
+        signals, evidence, contracts = [], [], []
+    return CryptoClassification(
+        platform=r["platform"],
+        handle=r["account_handle"] or r["account_key"],
+        account_key=r["account_key"],
+        classification=r["classification"],
+        confidence=r["confidence"],
+        score=r["score"],
+        signals=signals,
+        evidence=evidence,
+        contracts=contracts,
+        classified_at=r["classified_at"],
+    )
+
+
+def save_crypto_events(events: list[CryptoIntelEvent]) -> None:
+    """Append crypto-pipeline events. Append-only audit log (never updates/deletes)."""
+    if not events:
+        return
+    with _LOCK:
+        conn = _connect()
+        conn.executemany(
+            """
+            INSERT INTO crypto_events
+                (event_type, platform, kol_handle, account_key, detected_at, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    e.event_type,
+                    *_norm(e.platform, e.kol_handle),
+                    e.account_key,
+                    e.detected_at,
+                    json.dumps(e.payload),
+                )
+                for e in events
+            ],
+        )
+        conn.commit()
+
+
+def list_crypto_events(
+    platform: str,
+    handle: str,
+    *,
+    event_type: str | None = None,
+    limit: int = 200,
+) -> list[CryptoIntelEvent]:
+    """Recent crypto-pipeline events for a KOL, newest first. Optional type filter."""
+    p, h = _norm(platform, handle)
+    with _LOCK:
+        conn = _connect()
+        clauses = ["platform = ?", "kol_handle = ?"]
+        params: list = [p, h]
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM crypto_events WHERE {' AND '.join(clauses)} "
+            "ORDER BY id DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+    out: list[CryptoIntelEvent] = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except (ValueError, TypeError):
+            payload = {}
+        out.append(CryptoIntelEvent(
+            event_type=r["event_type"],
+            platform=r["platform"],
+            kol_handle=r["kol_handle"],
+            account_key=r["account_key"],
+            detected_at=r["detected_at"],
+            payload=payload,
+        ))
+    return out
 
 
 def reset_for_tests(db_path: str | None = None) -> None:

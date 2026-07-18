@@ -259,6 +259,160 @@ class ProviderCapabilities(BaseModel):
     requires_auth_session: bool = False
 
 
+# --- Crypto intelligence (Deliverable D) -------------------------------------
+
+# What kind of account we think this is. Deliberately coarse and platform-neutral;
+# scoring/clustering (later deliverables) refine on top, they do not replace this.
+#   official      — the token/project's own account (name/CA/official links align)
+#   team          — a founder/dev/core-team account tied to a project
+#   community      — a fan/community/announcements account for a project
+#   infrastructure — tooling/exchange/aggregator (DexScreener, a wallet, a launchpad)
+#   individual     — a person with no strong project affiliation
+#   unknown        — not enough signal to say (the safe default)
+ACCOUNT_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {"official", "team", "community", "infrastructure", "individual", "unknown"}
+)
+
+# Which classifications are "a crypto project worth analyzing". Only these, when
+# confident, hand contracts to the rug analyzer. `individual`/`unknown` never do.
+CRYPTO_PROJECT_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {"official", "team", "community"}
+)
+
+# Confidence bands, high->low. Strings (not enum) to match the codebase style; the
+# numeric thresholds that map a score onto a band live in config so they're tunable.
+CONFIDENCE_LEVELS: tuple[str, ...] = ("very_high", "high", "medium", "low", "very_low")
+
+# Internal event kinds for the crypto pipeline. Engine-internal facts, NOT user
+# alerts (alerting is a later deliverable) — persisted so later modules read history.
+CRYPTO_EVENT_TYPES: frozenset[str] = frozenset(
+    {"crypto_project_detected", "contract_extracted", "analysis_completed", "analysis_failed"}
+)
+
+
+class Evidence(BaseModel):
+    """One piece of supporting evidence for a classification.
+
+    Structured (not a free string) so later AI/heuristic reasoning can weigh it:
+    `signal` is the machine name (a key in `kol_crypto_signal_weights`), `detail` is
+    the human-readable specifics, `weight` is the contribution actually applied, and
+    `source` says where on the profile it was found (bio/website/links/name/handle).
+    """
+
+    signal: str
+    detail: str
+    weight: int = 0
+    source: str | None = None  # "bio" | "website" | "links" | "display_name" | "handle" | ...
+
+
+class ExtractedContract(BaseModel):
+    """A contract address mined from an account's profile, with provenance.
+
+    `chain` is a best-effort label ("robinhood"/"ethereum"/"base"/"solana"/...);
+    `supported` marks whether this project's single-chain analyzer can actually
+    analyze it (only EVM addresses on the configured chain today). Unsupported
+    chains are still recorded — extraction never silently drops a discovery."""
+
+    address: str
+    chain: str | None = None
+    supported: bool = False
+    source: str | None = None       # where it was found (bio/links/website/...)
+    evidence: str | None = None     # human note, e.g. "CA: prefix in bio"
+
+
+class ProfileIntelligence(BaseModel):
+    """Structured, normalized read of a social profile — the analyzer's input view.
+
+    Platform-neutral and provider-agnostic: built from a `SocialAccount` alone, it
+    flattens display name / username / bio / website / links / metadata / verified
+    into one object the detector reasons over. Kept separate from `SocialAccount` so
+    enrichment logic never mutates the raw provider capture."""
+
+    platform: str
+    handle: str
+    display_name: str | None = None
+    bio: str | None = None
+    website: str | None = None
+    links: list[str] = Field(default_factory=list)
+    verified: bool | None = None
+    followers_count: int | None = None
+    following_count: int | None = None
+    # Lowercased concatenation of the text fields, for cheap keyword scanning.
+    text_blob: str = ""
+
+
+class CryptoClassification(BaseModel):
+    """The full, explainable result of classifying one account.
+
+    Every classification carries its `evidence` and the `signals` that fired, so no
+    verdict is a black box: a reader (or a later AI stage) can see exactly why. A
+    verdict is only actionable (contracts get analyzed) when `is_actionable` — a
+    crypto-project classification, confident enough, with enough corroboration."""
+
+    platform: str
+    handle: str
+    account_key: str
+    classification: str            # one of ACCOUNT_CLASSIFICATIONS
+    confidence: str                # one of CONFIDENCE_LEVELS
+    score: int = 0                 # 0..100 weighted signal score
+    signals: list[str] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+    contracts: list[ExtractedContract] = Field(default_factory=list)
+    classified_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("classification")
+    @classmethod
+    def _validate_classification(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ACCOUNT_CLASSIFICATIONS:
+            raise ValueError(
+                f"unknown classification {v!r}; expected one of {sorted(ACCOUNT_CLASSIFICATIONS)}"
+            )
+        return v
+
+    @field_validator("confidence")
+    @classmethod
+    def _validate_confidence(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in CONFIDENCE_LEVELS:
+            raise ValueError(
+                f"unknown confidence {v!r}; expected one of {list(CONFIDENCE_LEVELS)}"
+            )
+        return v
+
+    @property
+    def is_crypto_project(self) -> bool:
+        return self.classification in CRYPTO_PROJECT_CLASSIFICATIONS
+
+    def supported_contracts(self) -> list[ExtractedContract]:
+        """Extracted contracts the local analyzer can actually process."""
+        return [c for c in self.contracts if c.supported]
+
+
+class CryptoIntelEvent(BaseModel):
+    """An engine-internal crypto-pipeline fact (detection/extraction/analysis).
+
+    NOT a user alert (alerting is a later deliverable). `payload` carries an
+    event-specific JSON-able dict (e.g. the analyzed contract + risk summary) so the
+    durable log is self-describing for later intelligence and the eventual alerter."""
+
+    event_type: str                # one of CRYPTO_EVENT_TYPES
+    platform: str
+    kol_handle: str                # the watched KOL whose follow triggered this
+    account_key: str               # the followed account being analyzed
+    detected_at: str = Field(default_factory=utc_now_iso)
+    payload: dict = Field(default_factory=dict)
+
+    @field_validator("event_type")
+    @classmethod
+    def _validate_event_type(cls, v: str) -> str:
+        if v not in CRYPTO_EVENT_TYPES:
+            raise ValueError(
+                f"unknown crypto event type {v!r}; expected one of {sorted(CRYPTO_EVENT_TYPES)}"
+            )
+        return v
+
+
 # --- Watchlist domain model --------------------------------------------------
 
 

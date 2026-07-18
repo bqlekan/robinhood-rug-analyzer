@@ -25,7 +25,7 @@ import logging
 
 from app.core.config import settings
 from app.models.kol import FollowingSnapshot, KolEntry, KolSeed, WatchStatus
-from app.services import kol_monitor, kol_store
+from app.services import kol_crypto_pipeline, kol_monitor, kol_store
 from app.services.social import get_provider, is_supported
 from app.services.social.base import ProviderError
 
@@ -308,4 +308,20 @@ async def capture_following(handle: str, platform: str | None = None) -> Followi
         len(snapshot.accounts), platform, handle,
         len(diff.new_follows), len(diff.unfollows),
     )
+
+    # Deliverable D: automatically classify each NEW follow and, for confident crypto
+    # projects, run the existing rug analyzer on any contracts on their profile. Only
+    # `diff.new_follows` (never a baseline's whole list — that yields no new follows),
+    # so a first capture never triggers a burst of analysis. Gated + best-effort: the
+    # pipeline no-ops when disabled and swallows per-account analysis failures, so it
+    # can never turn a good capture into a failed sync.
+    if diff.new_follows:
+        try:
+            await kol_crypto_pipeline.process_new_follows(platform, handle, diff.new_follows)
+        except Exception:  # noqa: BLE001 — intelligence is additive; capture already succeeded
+            logger.exception(
+                "crypto intelligence pipeline errored for %s:%s (capture unaffected)",
+                platform, handle,
+            )
+
     return snapshot
