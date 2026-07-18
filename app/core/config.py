@@ -324,6 +324,42 @@ class Settings(BaseSettings):
         "kol_cluster_detected", "high_conviction_cluster", "project_momentum_detected",
     ]
 
+    # --- Token Watchlist & Monitoring Engine (M24) --------------------------
+    # Master switch for the background monitoring scheduler. Off by default —
+    # like every other engine here it is opt-in and does NO background work
+    # until enabled. When off, the watchlist store + management API still work
+    # (you can add/list tokens); only the periodic scheduler stays dormant.
+    token_monitor_enabled: bool = False
+    # Separate sqlite DB from the wallet + KOL stores so the monitoring domain
+    # (watchlist, history, events) stays decoupled and independently scalable.
+    token_monitor_db_path: str = "data/token_monitor.db"
+    # Scheduler cadence. The loop wakes every `interval_seconds` and processes
+    # the enabled watchlist. Configurable so operators can trade freshness for
+    # the free-tier API budget the analyzer consumes.
+    token_monitor_interval_seconds: int = 900
+    # Concurrency limit: how many tokens are analyzed in parallel within one
+    # cycle. Bounds the load a single cycle puts on the reused analyzer + its
+    # upstream data sources. Must be >= 1.
+    token_monitor_concurrency: int = 3
+    # Per-token analysis timeout (seconds). A single token whose analysis hangs
+    # can never stall the whole cycle — it is abandoned after this budget and
+    # treated as a (retryable) failure.
+    token_monitor_timeout_seconds: int = 120
+    # Retry policy for a token whose monitoring cycle fails (analyzer error or
+    # timeout). `attempts` is the total number of tries per token per cycle
+    # (1 = no retry); `backoff_seconds` is the base delay between tries.
+    token_monitor_retry_attempts: int = 2
+    token_monitor_retry_backoff_seconds: float = 1.0
+    # History retention: how many monitoring-history rows to keep per token.
+    # Older rows are pruned after each save so the table can't grow without
+    # bound. <= 0 disables pruning (keep all).
+    token_monitor_history_retain: int = 200
+    # Config-driven seed watchlist. Editing this list is the no-code way to
+    # manage which tokens are monitored; `token_monitor.sync_from_config()`
+    # reconciles it into the store on startup. Each item is either a bare
+    # address string or {address, label?, enabled?, options?}.
+    token_monitor_seed: list = []
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

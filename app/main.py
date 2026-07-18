@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.core.config import settings
 from app.core.logging_config import configure_logging
-from app.services import http, wallet_intel
+from app.services import http, token_monitor, wallet_intel
 
 # On Windows, StaticFiles derives Content-Type from the system registry, which often
 # maps .css/.js to text/plain. Browsers then refuse to apply the stylesheet, leaving an
@@ -42,16 +42,43 @@ async def _watchlist_refresh_loop() -> None:
             logger.warning("Watchlist refresh cycle failed: %s", exc)
 
 
+async def _token_monitor_loop() -> None:
+    """Periodically re-run the reused intelligence pipeline over the token
+    watchlist and record what changed (M24).
+
+    Interval-gated to respect the free-tier API budget the analyzer consumes.
+    The whole engine is opt-in: this loop only starts when TOKEN_MONITOR_ENABLED
+    is set. A single cycle can never kill the loop — run_cycle is failure-isolated
+    and this guards it a second time.
+    """
+    # Reconcile any config-driven seed watchlist once at startup.
+    try:
+        token_monitor.sync_from_config()
+    except Exception as exc:  # seeding must never block the loop starting
+        logger.warning("Token monitor seed sync failed: %s", exc)
+    while True:
+        await asyncio.sleep(settings.token_monitor_interval_seconds)
+        try:
+            report = await token_monitor.run_cycle()
+            if report.changed:
+                logger.info("Token monitor cycle recorded %s change(s).", report.changed)
+        except Exception as exc:  # never let the loop die
+            logger.warning("Token monitor cycle failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    task: asyncio.Task | None = None
+    tasks: list[asyncio.Task] = []
     if settings.watchlist_refresh_enabled:
-        task = asyncio.create_task(_watchlist_refresh_loop())
+        tasks.append(asyncio.create_task(_watchlist_refresh_loop()))
+    if settings.token_monitor_enabled:
+        tasks.append(asyncio.create_task(_token_monitor_loop()))
     try:
         yield
     finally:
-        if task:
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await http.aclose()

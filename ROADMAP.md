@@ -888,6 +888,77 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   events), extension points (new alert sinks, new address shapes, new KOL tiers), and the future
   **migration path to official X APIs** should the free-scrape path become untenable.
 
+### M24 — Token Watchlist & Monitoring Engine (continuous re-analysis → change detection) ✅ COMPLETE
+
+- **Goal:** Keep a watchlist of contract addresses under continuous surveillance: on a schedule,
+  re-run the **existing** intelligence pipeline against each token and record **only what changed** —
+  risk score/level, honeypot status, pool liquidity, and (when a token is linked to a KOL project)
+  the KOL Intelligence Score + cluster size. Turns the analyzer from a one-shot lookup into a
+  standing watch that surfaces *movement* — a token going from safe to honeypot, liquidity draining,
+  risk climbing — without a human re-running a scan.
+- **Why it matters:** Every prior milestone answers "what is this token right now?" A rug is a
+  *process*, not a snapshot: liquidity is pulled, sell-tax is flipped, risk climbs after launch. The
+  signal is in the **delta over time**, which a single analysis can't see. This is the reactive
+  on-chain counterpart to M23's leading social watch — same "gets smarter the more it's used" theme,
+  applied to the contract itself.
+- **Design rule (non-negotiable):** monitoring **reuses, never reimplements.** All contract analysis
+  flows through the one shared entry point `rug_analyzer.analyze_token_contract()` (which already
+  chains detection → route discovery → `honeypot_sim` → risk `scoring`); KOL signals come from a plain
+  read of the `ProjectIntelligence` the M23 engine already computed. There is **no analysis logic** in
+  this milestone — only orchestration (scheduling, concurrency, retry, timeout), change detection over
+  the reused scalars, and persistence of the deltas. It also adds **no new notification/delivery
+  logic** — emitting an internal `MonitorEvent` is where it stops (delivery is M23 Deliverable H's job).
+- **Status:** ✅ **Done.**
+  _As built:_ pydantic domain models in `app/models/monitor.py` (`TokenWatchEntry` + `MonitorOptions`
+  with per-token noise thresholds and an optional KOL-project linkage; `MonitorSnapshot` whose every
+  field is copied verbatim from an existing analyzer/KOL output; `MonitorEvent` / `MonitorHistoryEntry`
+  / `MonitorResult` / `MonitorCycleReport`; string-"enum" vocabularies with `field_validator`s, matching
+  `models/token.py`/`models/kol.py`). Persistence in `app/services/token_monitor_store.py` — a
+  stdlib-`sqlite3`, lock-guarded store at `settings.token_monitor_db_path` (own DB file, decoupled from
+  the wallet/KOL stores; mirrors `kol_store`/`watchlist_store`) with four tables: `token_watchlist`
+  (CRUD + enable/disable + options), `monitor_latest` (the per-token diff baseline), append-only
+  `monitor_history` (before/after rows written **only when something changed**, per-token retention via
+  `token_monitor_history_retain`), and append-only `monitor_events`; plus `reset_for_tests`. The engine
+  in `app/services/token_monitor.py`: thin watchlist management (`add_token`/`remove_token`/`set_enabled`/
+  `update_options`, address-validated via the reused `is_valid_address`), `sync_from_config` for a
+  declarative seed watchlist (adds/refreshes, never auto-deletes), `_build_snapshot` (the **single**
+  reuse seam — one `analyze_token_contract` call + an optional `kol_store.get_project_intelligence`
+  read, copying scalars, recomputing nothing), config-driven per-field change detection (`min_risk_delta`
+  / `min_kol_delta` / `min_liquidity_change_pct`, with None↔value appearance always counting) raising the
+  specific per-field events plus a `project_changed` umbrella, `monitor_once` (timeout + retry, fully
+  failure-isolated — never raises, stamps `active`/`error` status), and `run_cycle` (bounded-concurrency
+  sweep of enabled tokens, each isolated, guarded a second time so the cycle can't die). Scheduling reuses
+  the `app/main.py` `asyncio.create_task` background-loop pattern next to `_watchlist_refresh_loop`
+  (`_token_monitor_loop`, seeds from config once at startup then interval-gates `run_cycle`), gated by
+  `settings.token_monitor_enabled` (**off by default**, like the other engines). All intervals/thresholds/
+  retries/retention are config (`token_monitor_*` block in `config.py`). Covered by
+  `tests/test_token_monitor.py` (29 tests: watchlist CRUD + idempotency + events, config seeding, the
+  analyzer-reuse seam incl. `include_lore` flow + verbatim-copy + KOL linkage/no-linkage, per-field change
+  detection + thresholds + first-sighting baseline + no-change dedupe, persistence + retention pruning,
+  and failure isolation — analysis error retried, timeout-as-failure, transient recovery, one bad token
+  never sinking the cycle, outer-guard, empty-watchlist no-op).
+- **Files/modules (new, additive):** `app/models/monitor.py`, `app/services/token_monitor_store.py`
+  (sqlite: watchlist / latest-baseline / history / events — mirrors `kol_store`),
+  `app/services/token_monitor.py` (management + scheduler + change detection, reusing the analyzer),
+  `tests/test_token_monitor.py`. **Touched minimally & additively:** `app/core/config.py` (new
+  `token_monitor_*` settings block), `app/main.py` (register `_token_monitor_loop` next to the existing
+  refresh loop, guarded by the enable flag). `rug_analyzer`/`kol_store` are **consumed, not modified**.
+- **Integration points:** (1) `rug_analyzer.analyze_token_contract()` — the single reuse seam for all
+  contract analysis; (2) `kol_store.get_project_intelligence()` — the reuse seam for KOL signals;
+  (3) the `main.py` `asyncio.create_task` background-loop pattern (no new scheduler dependency);
+  (4) the `sqlite3` store pattern for persistence; (5) pydantic `BaseSettings` for all config.
+- **Dependencies:** M10 (full analyze pipeline) + M23-F (KOL `ProjectIntelligence`, optional). **No new
+  external dependency.**
+- **Effort:** Medium (orchestration + persistence + change detection; zero new analysis) · **Risk:** Low
+  (additive; off by default; every reuse seam already ships and stays unmodified).
+- **Expected improvement:** Adds a **temporal** dimension absent from every prior signal — detection of
+  *change* (safe→honeypot, liquidity drain, risk climb) rather than a point-in-time verdict. Additive-only.
+- **Acceptance criteria:** watchlist add/remove/toggle + config seeding; a monitored token whose reused
+  analysis moves produces a history row + typed change events (no duplicated analysis logic); a no-change
+  cycle writes nothing new; first sighting establishes a baseline silently; all intervals/thresholds/
+  retention config-driven; one token's analysis failure/timeout is isolated and retried, never sinking the
+  cycle or the scheduler loop; **existing tests stay green (zero regression — 332 → 361).**
+
 ---
 
 ## Prioritized checklist (highest ROI → lowest)
@@ -917,6 +988,7 @@ ROI = detection/user value per unit effort-and-risk. Enablers rank high because 
 21. **[M21] Watchlist improvements** — Small–Medium, usability.
 22. **[M22] Multi-chain** — Large, deferred; breadth not depth.
 23. **[M23] KOL Intelligence (X follow-graph)** — Large, new leading/social+alpha dimension; cluster events are the payoff. Reuses the analyze pipeline, so effort is sourcing+scheduling+scoring, not re-analysis.
+24. **[M24] Token Watchlist & Monitoring** — Medium, adds a temporal (change-over-time) dimension by re-running the analyze pipeline on a schedule and recording deltas. Pure orchestration+persistence; reuses the analyzer and KOL intel, so no new analysis and low risk.
 
 ---
 
@@ -964,8 +1036,9 @@ Persistent, growing reputation that turns usage into a moat.
 - M19 Snapshots + trend detection
 - M22 Multi-chain *(optional, only if product direction shifts to breadth)*
 - M23 KOL Intelligence (X follow-graph) *(new leading/social+alpha dimension; **blocker:** provision a persistent X session for Playwright)*
+- M24 Token Watchlist & Monitoring *(temporal change-over-time dimension; re-runs the analyze pipeline on a schedule and records deltas — pure orchestration, reuses M10 + M23, no new infra)*
 
-**Theme:** the analyzer gets smarter the more it's used — on-chain reputation that compounds, plus a leading social signal (M23) that fires before liquidity exists.
+**Theme:** the analyzer gets smarter the more it's used — on-chain reputation that compounds, plus a leading social signal (M23) that fires before liquidity exists and a standing watch (M24) that catches a token *changing* after the first look.
 
 ---
 
