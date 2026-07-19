@@ -557,7 +557,18 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 > proposed bundling workflow belong to M15. Bundle *scoring/classification* is M14;
 > this milestone supplies the timing signals that feed it. Additive metadata only.
 
-### M16 — Smart-wallet cross-token implementation (activate the dead path)
+### M16 — Smart-wallet cross-token implementation (activate the dead path) ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-19). Blocker resolved: `/addresses/{addr}/tokens` is live on
+  Robinhood Chain (probed), so no transfer reconstruction was needed. New
+  `blockscout_client.get_address_token_holdings` + `wallet_intel._count_surviving_tokens` count each
+  candidate's *other* surviving ERC-20 holdings and feed `surviving_tokens` into the existing
+  `smart_wallet_proxy` (which already scored it, +up-to-35). `profile_token_wallets` pre-scores the
+  on-token signals, then does a survival lookup only for near-threshold wallets, capped at
+  `smart_wallet_survival_candidates` (default 10) strongest-first — so a wallet early on ≥2 surviving
+  tokens can now clear the 70 threshold. Request volume is bounded (≤ cap lookups/analyze). Frontend
+  empty-state reverted to a genuine "none found". M6 semantics (dumped ≠ smart) preserved unchanged.
+  424 tests pass.
 
 **Goal:** Compute `surviving_tokens` per candidate wallet so the smart-wallet proxy can actually clear its threshold, populating the "Smart Wallets" tab.
 

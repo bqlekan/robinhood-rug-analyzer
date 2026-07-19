@@ -235,7 +235,7 @@ frontend; owns the lifespan-scoped background scheduler.
 ### 3.3 Data clients and infrastructure
 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.
-- Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_token_holders_paged(address, pages)`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`.
+- Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_token_holders_paged(address, pages)`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_token_holdings` (M16: a wallet's current token holdings, for cross-token survival), `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`.
 - Dependencies: `http.get_client`, `cache`. Config: `blockscout_base_url`, cache settings.
 - Failure modes: central `_get` returns `None` on any HTTP/JSON error. **Only immutable reads are cached**; holders/transfers/counters/market are always live.
 
@@ -614,7 +614,7 @@ router is mapped, and the launchpad registries are empty by design.
 6. **Transfers** — fetched **once** (`transfer_scan_pages`), normalized oldest-first, reused by clusters/dev/insiders.
 7. **Clusters** — multi-hop funder trace (concurrent, bounded by `funder_max_hops`) + mutual transfers → `analyze_clusters` (union-find), then `analyze_bundle` grades the bundler/sybil pattern (M14).
 8. **Dev/creator** — dev holding %, dev transfers, creator launch scan (classify by liquidity) → `analyze_dev`.
-9. **Wallet intel** — build `known_contracts` (LP + contract holders) → `analyze_buy_timing` (M15: same-block / launch-window buy cohort from the already-fetched transfers) → `profile_token_wallets` (insiders; smart list inert; persists) → `_watchlist_hits`.
+9. **Wallet intel** — build `known_contracts` (LP + contract holders) → `analyze_buy_timing` (M15: same-block / launch-window buy cohort from the already-fetched transfers) → `profile_token_wallets` (insiders; M16: smart candidates get a bounded cross-token survival lookup so the proxy can clear its threshold; persists) → `_watchlist_hits`.
 10. **Liquidity lock** — only if a pair exists → `analyze_liquidity_lock`; if a registry-verified locker with an unlock-read spec holds the LP, one `eth_call` reads its unlock time → `apply_unlock_schedule` (M13; inert on empty registry / spec-less lockers).
 11. **Launchpad** — **gated** on `has_enabled_launchpads()`; only then fetch creation evidence (RPC-first, Blockscout fallback) → `analyze_launchpad`.
 12. **Lore** — only if `include_lore` → `build_lore`.
@@ -900,6 +900,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M13 — LP lock duration & unlock schedule | Done | `locker_unlock_spec` + `decode_unlock_timestamp`/`apply_unlock_schedule` (one `eth_call` reads a verified locker's unlock time; past unlock → `unlocked`) + near-term-unlock signal in `scoring` |
 | M14 — Funder-graph depth & bundler detection | Done | multi-hop `_trace_funders` (bounded `funder_max_hops`, memoized), multi-hop union in `analyze_clusters`, `analyze_bundle` (0-100 bundle score + Normal/Moderate/Heavy/Extreme) + bundler signal in `scoring` |
 | M15 — Same-block / coordinated-buy timing | Done | block captured in `normalize_transfers`; `analyze_buy_timing` (same-block + launch-window cohort of distinct first-buyers) + coordinated-timing signal in `scoring` |
+| M16 — Smart-wallet cross-token activation | Done | `get_address_token_holdings` + `_count_surviving_tokens` (bounded by `smart_wallet_survival_candidates`) feed `surviving_tokens` into `smart_wallet_proxy`, so the smart list can clear its threshold; frontend empty-state reverted to a genuine "none found" |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |
@@ -919,7 +920,7 @@ reputation, snapshots/trends, multi-chain). See §16.
 Documented honestly — none of this is hidden.
 
 ### Current trade-offs (by design)
-- **`smart` wallet list is always empty in production.** In single-token analysis `surviving_tokens` is never supplied, so the max proxy score (65) is below the threshold (70). Documented in-code; activation is M16.
+- **`smart` wallet list depended on cross-token survival (fixed in M16).** `profile_token_wallets` now runs a bounded `/addresses/{addr}/tokens` survival lookup for near-threshold candidates and folds `surviving_tokens` into the proxy, so the list can populate on real data.
 - **Launchpad creation-evidence path never fires** because `LAUNCHPADS`/`LP_LOCKERS` are empty by design (avoids false "locked"/"safe"). Populating verified entries activates it.
 - **Honeypot sim is inert** on any chain without a mapped router; only Robinhood Chain (Uniswap v3) is wired.
 - **Sampled holders only** — distribution/clusters use one ~50-row sampled page, not the full holder set (M12).

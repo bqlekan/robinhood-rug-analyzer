@@ -110,6 +110,19 @@ async def get_address_transactions(address: str) -> list[dict[str, Any]]:
     return items if isinstance(items, list) else []
 
 
+async def get_address_token_holdings(address: str) -> list[dict[str, Any]]:
+    """Tokens currently held by an address (single page, M16 cross-token survival).
+
+    Each item is `{token: {address_hash, type, ...}, value, ...}`. Used to count how
+    many *surviving* tokens a candidate smart wallet still holds. One page (~50 rows)
+    is enough for a survival count and keeps request volume bounded. Not cached — a
+    wallet's live holdings change. `[]` on any failure.
+    """
+    payload = await _get(get_client(), f"/addresses/{address}/tokens")
+    items = (payload or {}).get("items") or []
+    return items if isinstance(items, list) else []
+
+
 async def get_smart_contract(address: str) -> dict[str, Any] | None:
     """Verified contract source + metadata (name, compiler, abi, source, imports).
 

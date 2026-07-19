@@ -400,7 +400,7 @@ async function loadWatchlist() {
     const insider = (data.insider_wallets || []).map(walletCard).join("");
     walletsResults.innerHTML = `
       <h2>Smart Wallets (estimated)</h2>
-      <div class="ranked-list">${smart || "<p class='lore-meta'>Smart-wallet detection is not yet implemented, so this list is empty by design (it does not mean no smart wallets exist). Insider detection below is active.</p>"}</div>
+      <div class="ranked-list">${smart || "<p class='lore-meta'>No smart wallets found for this token from free on-chain signals (early entry, held position, and surviving cross-token holdings). This is an estimate, not verified ROI.</p>"}</div>
       <h2>Insider Wallets</h2>
       <div class="ranked-list">${insider || "<p class='lore-meta'>No insider wallets flagged yet.</p>"}</div>`;
   } catch (error) {

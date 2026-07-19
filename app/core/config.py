@@ -121,6 +121,17 @@ class Settings(BaseSettings):
     # Transfer pages to pull when profiling a token's flow (each ~50 rows).
     transfer_scan_pages: int = 2
 
+    # --- Smart-wallet cross-token survival (M16) ---
+    # Computing surviving_tokens costs one /addresses/{addr}/tokens lookup per wallet, so
+    # only the strongest same-token candidates are checked. Ranked by their single-token
+    # proxy score, the top N have their survival counted; 0 disables the cross-token pass
+    # (reverts to the prior inert behaviour). Bounds request amplification per analyze.
+    smart_wallet_survival_candidates: int = 10
+    # A held token counts toward "surviving" only if its balance is positive AND it still
+    # has at least this many holders — a dead/rugged token often collapses to a handful of
+    # wallets, so requiring a floor keeps "survived" meaning "still a live token".
+    smart_wallet_survival_min_holders: int = 50
+
     # --- Funder graph / bundler detection (M14) ---
     # How many hops back to trace each holder's funding chain. 1 == prior single-hop
     # behaviour; 2-3 catches funder->intermediary->fresh-wallet bundling. Bounded because

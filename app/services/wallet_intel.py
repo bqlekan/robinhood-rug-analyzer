@@ -185,6 +185,49 @@ def smart_wallet_proxy(
 # --- Async orchestration (fetch + persist) ---
 
 
+async def _count_surviving_tokens(wallets: list[str], *, exclude_token: str | None = None) -> dict[str, int]:
+    """Count each wallet's other surviving ERC-20 holdings (M16), bounded and concurrent.
+
+    "Surviving" = the wallet still holds a positive balance of an ERC-20 (excluding the
+    token under analysis). A wallet early on several tokens it still holds is a stronger
+    smart-money signal than one early on a single token. One `/addresses/{addr}/tokens`
+    call per wallet; the caller caps how many wallets reach here, so volume stays bounded.
+    Any failed lookup degrades to 0 (never raises, never a false-high count).
+    """
+    if not wallets:
+        return {}
+    exclude = (exclude_token or "").lower()
+
+    async def count_one(wallet: str) -> tuple[str, int]:
+        try:
+            holdings = await blockscout_client.get_address_token_holdings(wallet)
+        except Exception as exc:  # a bad lookup must not break profiling
+            logger.warning("Survival lookup failed for %s: %s", wallet, exc)
+            return wallet, 0
+        min_holders = settings.smart_wallet_survival_min_holders
+        seen: set[str] = set()
+        for h in holdings:
+            token = h.get("token") or {}
+            if token.get("type") != "ERC-20":
+                continue
+            addr = (token.get("address_hash") or token.get("address") or "").lower()
+            if not addr or addr == exclude:
+                continue
+            if (to_float(h.get("value")) or 0) <= 0:
+                continue
+            # A rugged/dead token often collapses to a few wallets; require a holder
+            # floor so "surviving" means "still a live token", not a worthless bag.
+            # holders_count absent -> don't over-filter (count it).
+            hc = to_int(token.get("holders_count"))
+            if hc is not None and hc < min_holders:
+                continue
+            seen.add(addr)
+        return wallet, len(seen)
+
+    results = await asyncio.gather(*(count_one(w) for w in wallets), return_exceptions=True)
+    return {w: n for res in results if isinstance(res, tuple) for w, n in [res]}
+
+
 async def profile_token_wallets(
     token_address: str,
     creator: str | None,
@@ -211,16 +254,32 @@ async def profile_token_wallets(
     insiders = detect_insiders(transfers, creator, holder_percentages, known_contracts=known_contracts)
 
     # Score smart-wallet proxies for the distinct non-contract participants.
-    # ponytail: smart promotion is inert here. smart_wallet_proxy is called
-    # without surviving_tokens (single-token analysis has no cross-token view), so
-    # only the early-entry (+35) and distribution (+30) signals can fire: max 65,
-    # below smart_wallet_min_proxy_score (70). The `smart` list is therefore always
-    # empty in production. Upgrade path: compute per-wallet surviving_tokens via a
-    # cross-token holdings/survival pass and pass it in, then re-tune the threshold.
-    candidates = {r["to"] for r in transfers if r["to"] and r["to"] != ZERO}
+    # M16: the single-token signals (early entry +35, held-position +30) top out at 65,
+    # below the threshold (70). The deciding signal is cross-token survival — how many
+    # OTHER tokens the wallet still holds. We compute it for the strongest on-token
+    # candidates only (bounded by settings.smart_wallet_survival_candidates) so request
+    # volume stays capped, then re-score those with surviving_tokens folded in.
+    contracts_skip = {(c or "").lower() for c in (known_contracts or set())}
+    contracts_skip.add((creator or "").lower())
+    candidates = {r["to"] for r in transfers if r["to"] and r["to"] != ZERO and r["to"] not in contracts_skip}
+
+    # Pre-score on single-token signals; only the near-threshold wallets are worth a
+    # survival lookup (survival can add up to +35, so anything within that gap can promote).
+    prescored = [(addr, smart_wallet_proxy(addr, transfers)) for addr in candidates]
+    gap = 35  # max survival contribution; a wallet further than this below can't reach threshold
+    survival_pool = [
+        addr for addr, sw in prescored
+        if sw.proxy_score >= settings.smart_wallet_min_proxy_score - gap
+    ]
+    # Cap the survival lookups (each is one Blockscout call), strongest candidates first.
+    survival_pool.sort(key=lambda a: next(sw.proxy_score for x, sw in prescored if x == a), reverse=True)
+    survival_pool = survival_pool[: settings.smart_wallet_survival_candidates]
+    surviving_counts = await _count_surviving_tokens(survival_pool, exclude_token=token_address)
+
     smart: list[SmartWallet] = []
-    for addr in candidates:
-        sw = smart_wallet_proxy(addr, transfers)
+    for addr, sw in prescored:
+        if addr in surviving_counts:
+            sw = smart_wallet_proxy(addr, transfers, surviving_tokens=surviving_counts[addr])
         if sw.proxy_score >= settings.smart_wallet_min_proxy_score:
             smart.append(sw)
 
