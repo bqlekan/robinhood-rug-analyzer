@@ -38,8 +38,13 @@ class Settings(BaseSettings):
     # Cap how many tokens the ranked scanner analyzes per request so a single
     # scan cannot exhaust the free Blockscout rate budget.
     scan_max_tokens: int = 15
-    # How many top holders to pull for distribution + cluster analysis.
+    # How many top holders to pull for distribution + cluster analysis (single page cap).
     holder_sample_size: int = 50
+
+    # M12: how many holder pages (~50 rows each) to walk for the primary token, so
+    # concentration/top1/top10/clusters see beyond the first ~50 rows. Bounded to keep
+    # request volume in check (paging multiplies requests). 1 == prior single-page behaviour.
+    holder_scan_pages: int = 4
 
     # --- Scan tiering (M2) ---
     # A cheap pre-screen ranks candidates using ONLY list_tokens metadata (no extra

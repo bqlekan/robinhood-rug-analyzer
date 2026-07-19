@@ -23,8 +23,8 @@ sequenceDiagram
     RA->>RA: validate address (ValueError if bad)
     par parallel fetch batch
         RA->>DS: fetch_token_pairs
-        RA->>BS: get_token_info / get_address_info / get_token_holders
-        RA->>BS: fetch_contract_intel (verified source)
+        RA->>BS: get_token_info / get_address_info / get_token_holders_paged / get_token_counters
+        RA->>BS: get_smart_contract (verified source + ABI; shared by intel + privileges)
     end
     RA->>RA: market data, age, holders (LP excluded)
     RA->>BS: get_token_transfers (once, reused)

@@ -177,7 +177,7 @@ frontend; owns the lifespan-scoped background scheduler.
 **`app/services/rug_analyzer.py`** — orchestrator that composes all sub-analyses.
 - Public: `analyze_token_contract(contract_address, include_lore=True)`, `scan_and_rank(limit, include_lore=False)`.
 - Dependencies: `analyzers`, `blockscout_client`, `dexscreener_client`, `contract_intel`, `honeypot_sim`, `launchpad_registry`, `rpc_client`, `wallet_intel`, `watchlist_store`, `lore_client`, `scoring`.
-- Config: `holder_sample_size`, `transfer_scan_pages`, `scan_max_tokens`, `scan_tiering_enabled`, `scan_established_holder_floor`, `scan_light_promote_threshold`, `scan_max_deep_analyses`, `chain_name`.
+- Config: `holder_sample_size`, `holder_scan_pages`, `transfer_scan_pages`, `scan_max_tokens`, `scan_tiering_enabled`, `scan_established_holder_floor`, `scan_light_promote_threshold`, `scan_max_deep_analyses`, `chain_name`.
 - Extension: insert a fetch/analyze step and thread its typed result into `score_token` (see section 13).
 - Failure modes: raises `ValueError` on invalid address; every sub-fetch degrades to `None`/`[]`; `scan_and_rank` wraps each deep analysis so one bad token is dropped; funder/creator traces use `gather(return_exceptions=True)`.
 
@@ -241,7 +241,7 @@ frontend; owns the lifespan-scoped background scheduler.
 ### 3.3 Data clients and infrastructure
 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.
-- Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`.
+- Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_token_holders_paged(address, pages)`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`.
 - Dependencies: `http.get_client`, `cache`. Config: `blockscout_base_url`, cache settings.
 - Failure modes: central `_get` returns `None` on any HTTP/JSON error. **Only immutable reads are cached**; holders/transfers/counters/market are always live.
 
@@ -613,10 +613,10 @@ router is mapped, and the launchpad registries are empty by design.
 ### 9.1 `analyze_token_contract` — composition order
 
 1. **Validate** the address (`ValueError` if invalid).
-2. **Parallel fetch batch** (`asyncio.gather`): DexScreener pairs, token info, address info, token holders (`holder_sample_size`), verified contract payload (shared by contract intel + privileges).
+2. **Parallel fetch batch** (`asyncio.gather`): DexScreener pairs, token info, address info, paged token holders (`holder_scan_pages`), token counters (true holder count), verified contract payload (shared by contract intel + privileges).
 3. **Market data** — `choose_best_pair` → `_build_market_data`; seed `data_sources`.
 4. **Age** — prefer DexScreener `pairCreatedAt`; else fetch contract-creation tx timestamp; then `analyze_age`.
-5. **Holders/distribution** — `analyze_holders` with the LP pair address excluded.
+5. **Holders/distribution** — `analyze_holders` over the paged set, holder count from `/counters` (fallback: token payload), LP pair address excluded.
 6. **Transfers** — fetched **once** (`transfer_scan_pages`), normalized oldest-first, reused by clusters/dev/insiders.
 7. **Clusters** — funder trace (concurrent) + mutual transfers → `analyze_clusters` (union-find).
 8. **Dev/creator** — dev holding %, dev transfers, creator launch scan (classify by liquidity) → `analyze_dev`.
@@ -902,7 +902,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M9 — RPC layer | Partial | `rpc_client` (`eth_call` + state override) — the behavior-analysis foundation |
 | M10 — Honeypot / sell-tax simulation | Done | `honeypot_sim` + `route_discovery` + `core/honeypot_artifact` |
 | M11 — Contract-privilege / authority reads | Done | `contract_privileges` (ABI power detection + live `owner()`/`paused()` reads) + privilege signals in `scoring` |
-| M11 — Contract-privilege / authority reads | Done | `contract_privileges` (ABI powers + live `owner()`/`paused()` reads) + `privileges` signals in `scoring` |
+| M12 — Full holder set (paged) | Done | `get_token_holders_paged` (bounded `holder_scan_pages`) + `/counters` true holder count feeding `analyze_holders` |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |

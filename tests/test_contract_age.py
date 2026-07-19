@@ -66,8 +66,14 @@ def _stub_fetches(monkeypatch, *, pair, creation_tx, ts_calls):
     async def fake_address_info(addr):
         return {"creation_transaction_hash": creation_tx} if creation_tx else {}
 
-    async def fake_holders(addr, n):
+    async def fake_holders(addr, n=None):
         return []
+
+    async def fake_holders_paged(addr, pages=1):
+        return []
+
+    async def fake_counters(addr):
+        return None
 
     async def fake_smart_contract(addr):
         return None  # -> contract intel + privileges both degrade to inert, no RPC
@@ -84,6 +90,8 @@ def _stub_fetches(monkeypatch, *, pair, creation_tx, ts_calls):
     monkeypatch.setattr(blockscout_client, "get_token_info", fake_token_info)
     monkeypatch.setattr(blockscout_client, "get_address_info", fake_address_info)
     monkeypatch.setattr(blockscout_client, "get_token_holders", fake_holders)
+    monkeypatch.setattr(blockscout_client, "get_token_holders_paged", fake_holders_paged)
+    monkeypatch.setattr(blockscout_client, "get_token_counters", fake_counters)
     monkeypatch.setattr(blockscout_client, "get_smart_contract", fake_smart_contract)
     monkeypatch.setattr(blockscout_client, "get_transaction_timestamp", fake_ts)
     monkeypatch.setattr(blockscout_client, "get_token_transfers", fake_transfers)

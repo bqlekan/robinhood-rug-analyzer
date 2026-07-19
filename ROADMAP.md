@@ -439,8 +439,15 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 - **Suggested tests:** ABI-privilege detection (pure); live owner read mapped to signal;
   unverified → no false clean.
 
-### M12 — Full holder set (paged) instead of one sampled page
+### M12 — Full holder set (paged) instead of one sampled page ✅ COMPLETE
 
+- **Status:** ✅ **COMPLETE** (2026-07-19). `blockscout_client.get_token_holders_paged(address, pages)`
+  follows `next_page_params` (bounded by the configurable `holder_scan_pages`, default 4 ≈ 200
+  rows) exactly like the existing `get_token_transfers` pager; `/counters`
+  (`token_holders_count`) is now fetched in the analyze gather batch for the true holder count,
+  falling back to the token payload's
+  `holders_count`. `analyze_holders` was already source-agnostic, so concentration/top1/top10/
+  clusters/LP-exclusion now compute over the wider paged set with no logic change. 384 tests pass.
 - **Goal:** Page the holders endpoint (bounded) and use `/tokens/{addr}/counters` for true
   holder count, so concentration/top1/top10/clusters reflect more than ~50 rows.
 - **Why it matters:** A whale at rank 51 is currently invisible; a 40-holder token looks like

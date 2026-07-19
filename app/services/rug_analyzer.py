@@ -213,13 +213,17 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     pairs_task = fetch_token_pairs(normalized)
     token_info_task = blockscout_client.get_token_info(normalized)
     address_info_task = blockscout_client.get_address_info(normalized)
-    holders_task = blockscout_client.get_token_holders(normalized, settings.holder_sample_size)
+    # M12: page the holders endpoint (bounded) so concentration/clusters see more than
+    # ~50 rows, and read /counters for the true holder count (holders_count from the token
+    # payload can be a sampled/partial figure).
+    holders_task = blockscout_client.get_token_holders_paged(normalized, pages=settings.holder_scan_pages)
+    counters_task = blockscout_client.get_token_counters(normalized)
     # Fetch the verified contract payload once; both source-intel (M9) and privilege
     # reads (M11) derive from it, so no second Blockscout request fires.
     contract_task = blockscout_client.get_smart_contract(normalized)
 
-    pairs, token_info, address_info, holders_raw, contract_payload = await asyncio.gather(
-        pairs_task, token_info_task, address_info_task, holders_task, contract_task
+    pairs, token_info, address_info, holders_raw, counters, contract_payload = await asyncio.gather(
+        pairs_task, token_info_task, address_info_task, holders_task, counters_task, contract_task
     )
     ctr_intel = contract_intel.infer_from_contract(contract_payload)
 
@@ -246,7 +250,10 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     # real wallets, not the AMM pool itself.
     total_supply = (token_info or {}).get("total_supply")
     decimals = (token_info or {}).get("decimals")
-    holder_count = to_int((token_info or {}).get("holders_count"))
+    # M12: prefer the /counters holder count (true total); fall back to the token payload.
+    holder_count = to_int((counters or {}).get("token_holders_count")) or to_int(
+        (token_info or {}).get("holders_count")
+    )
     lp_addr = best_pair.get("pairAddress") if best_pair else None
     holder_distribution = analyzers.analyze_holders(
         holders_raw, holder_count, total_supply, decimals, lp_address=lp_addr

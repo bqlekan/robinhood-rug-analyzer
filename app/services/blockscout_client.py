@@ -60,6 +60,29 @@ async def get_token_holders(address: str, limit: int | None = None) -> list[dict
     return items if limit is None else items[:limit]
 
 
+async def get_token_holders_paged(address: str, pages: int = 1) -> list[dict[str, Any]]:
+    """Top token holders across up to `pages` pages (bounded full-holder set, M12).
+
+    Follows Blockscout's `next_page_params` exactly like `get_token_transfers`. A single
+    page (~50 rows) misses whales beyond rank ~50 and makes a 40-holder token look like a
+    40,000-holder one at the top; paging widens the set concentration/clusters see. Not
+    cached — holder balances are freshness-sensitive.
+    """
+    items: list[dict[str, Any]] = []
+    params: dict[str, Any] | None = None
+    client = get_client()
+    for _ in range(max(1, pages)):
+        payload = await _get(client, f"/tokens/{address}/holders", params=params)
+        page_items = (payload or {}).get("items") or []
+        if isinstance(page_items, list):
+            items.extend(page_items)
+        next_params = (payload or {}).get("next_page_params")
+        if not next_params:
+            break
+        params = next_params
+    return items
+
+
 async def get_address_info(address: str) -> dict[str, Any] | None:
     """Address details including creator_address_hash and creation_transaction_hash for contracts.
 
