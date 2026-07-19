@@ -343,6 +343,10 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     known_contracts = {e.address.lower() for e in holder_distribution.top_holders if e.is_contract and e.address}
     if lp_addr:
         known_contracts.add(lp_addr.lower())
+    # M15: same-block / within-seconds-of-launch buy coordination, from the transfers
+    # already fetched (no extra call). Excludes mint/creator/LP/contracts so a normal
+    # launch is not read as a cohort. Additive metadata, complements funder clusters.
+    buy_timing = analyzers.analyze_buy_timing(transfers, creator=creator, known_contracts=known_contracts)
     insiders, _smart = await wallet_intel.profile_token_wallets(
         normalized,
         creator,
@@ -437,6 +441,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         honeypot=honeypot,
         privileges=privileges,
         bundle=bundle,
+        buy_timing=buy_timing,
     )
 
     return TokenAnalysisResponse(
@@ -459,6 +464,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         contract_intel=ctr_intel,
         contract_privileges=privileges,
         bundle=bundle,
+        buy_timing=buy_timing,
     )
 
 

@@ -48,6 +48,9 @@ def normalize_transfers(raw: list[dict]) -> list[dict]:
                 "value": value,
                 "ts": it.get("timestamp"),
                 "method": it.get("method"),
+                # M15: block number for same-block coordination detection. Blockscout v2
+                # token transfers carry it as `block_number`; None when absent.
+                "block": to_int(it.get("block_number")),
             }
         )
     # Reverse into chronological (oldest first) using timestamp when present.

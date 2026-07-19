@@ -9,6 +9,7 @@ The final score is the capped sum, so each contribution stays auditable in the U
 from app.core.config import settings
 from app.models.token import (
     BundleAnalysis,
+    BuyTimingAnalysis,
     ClusterAnalysis,
     ContractPrivileges,
     DevProfile,
@@ -90,6 +91,7 @@ def score_token(
     honeypot: HoneypotResult | None = None,
     privileges: ContractPrivileges | None = None,
     bundle: BundleAnalysis | None = None,
+    buy_timing: BuyTimingAnalysis | None = None,
 ) -> RugAnalysis:
     signals: list[RiskSignal] = []
 
@@ -152,6 +154,14 @@ def score_token(
         points = 18 if bundle.classification == "Extreme" else 10
         _sig(signals, "Bundled / sybil launch", "clusters", severity, points,
              bundle.detail or f"{bundle.classification} bundling detected: {bundle.bundled_wallets} wallets from one funder.")
+
+    # --- Coordinated buy timing (M15) ---
+    # Same-block / launch-window buy cohorts signal coordinated control independent of
+    # funding source. Only a positively coordinated cohort scores; a single buyer or an
+    # organically-spaced launch adds nothing.
+    if buy_timing and buy_timing.coordinated:
+        _sig(signals, "Coordinated buy timing", "clusters", "medium", 12,
+             buy_timing.detail or "Multiple wallets bought in the same block / launch window; likely coordinated.")
 
     # --- Dev ---
     if dev:

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from app.core.config import settings
 from app.models.token import (
     BundleAnalysis,
+    BuyTimingAnalysis,
     ClusterAnalysis,
     DevProfile,
     DevTransfer,
@@ -378,6 +379,89 @@ def analyze_bundle(
         creator_funded_bundle=creator_funded,
         signals=signals,
         detail=f"{classification} bundling: {n_wallets} wallets from one funder hold ~{bundled_pct}% of supply.",
+    )
+
+
+def _parse_ts(value: object) -> float | None:
+    """Parse a Blockscout ISO timestamp into a unix float, or None if unparseable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def analyze_buy_timing(
+    transfers: list[dict],
+    *,
+    known_contracts: set[str] | None = None,
+    creator: str | None = None,
+    window_seconds: int | None = None,
+    min_cohort: int | None = None,
+) -> BuyTimingAnalysis:
+    """Detect same-block / within-seconds-of-launch buy coordination (M15). Pure.
+
+    Wallets that first receive the token in the same block, or within `window_seconds`
+    of the very first real buy, are coordinated independent of funding source. Reuses the
+    already-normalized transfers (block + ts captured in `normalize_transfers`); no fetch.
+
+    Excludes the mint (from == zero), the creator, and known contracts (LP/router) so a
+    single organic buyer or the launch mechanics are never mistaken for a cohort. A cohort
+    counts DISTINCT recipient wallets, so one wallet buying repeatedly is not a cohort.
+    """
+    window = settings.coordinated_buy_window_seconds if window_seconds is None else window_seconds
+    min_cohort = settings.coordinated_buy_min_cohort if min_cohort is None else min_cohort
+    creator_l = (creator or "").lower()
+    skip = {ZERO_ADDRESS, "", creator_l}
+    skip.update((c or "").lower() for c in (known_contracts or set()))
+
+    # First real acquisition per wallet, in chronological order (transfers are oldest-first).
+    first_seen: dict[str, dict] = {}
+    for rec in transfers:
+        to = (rec.get("to") or "").lower()
+        if to in skip or to in first_seen:
+            continue
+        first_seen[to] = rec
+
+    if len(first_seen) < min_cohort:
+        # Too few distinct buyers to form a cohort (covers single-buyer tokens).
+        return BuyTimingAnalysis(detail="Too few distinct buyers to assess buy-timing coordination.")
+
+    # Largest same-block cohort among first acquisitions.
+    by_block: dict[int, int] = {}
+    for rec in first_seen.values():
+        blk = rec.get("block")
+        if blk is not None:
+            by_block[blk] = by_block.get(blk, 0) + 1
+    same_block_number = max(by_block, key=by_block.get) if by_block else None
+    same_block_wallets = by_block.get(same_block_number, 0) if same_block_number is not None else 0
+
+    # Buyers landing within `window` seconds of the first real buy.
+    stamped = [(_parse_ts(r.get("ts")), a) for a, r in first_seen.items()]
+    times = sorted(t for t, _ in stamped if t is not None)
+    first_window_wallets = 0
+    if times:
+        launch = times[0]
+        first_window_wallets = sum(1 for t in times if t - launch <= window)
+
+    coordinated = same_block_wallets >= min_cohort or first_window_wallets >= min_cohort
+    if coordinated:
+        parts = []
+        if same_block_wallets >= min_cohort:
+            parts.append(f"{same_block_wallets} wallets first bought in block {same_block_number}")
+        if first_window_wallets >= min_cohort:
+            parts.append(f"{first_window_wallets} wallets bought within {window}s of launch")
+        detail = "Coordinated buy timing: " + "; ".join(parts) + "."
+    else:
+        detail = "No same-block or launch-window buy cohort detected."
+
+    return BuyTimingAnalysis(
+        same_block_wallets=same_block_wallets,
+        same_block_number=same_block_number,
+        first_window_wallets=first_window_wallets,
+        coordinated=coordinated,
+        detail=detail,
     )
 
 

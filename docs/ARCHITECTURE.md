@@ -220,7 +220,7 @@ frontend; owns the lifespan-scoped background scheduler.
 - Failure modes: no crashes; empty registry deliberately degrades to "Unknown" rather than a false "locked"/"safe" claim.
 
 **`app/services/analyzers.py`** — pure per-dimension analysis helpers.
-- Public: `analyze_age`, `analyze_holders`, `analyze_clusters` (union-find of shared-funder + mutual-transfer links; M14: shared-funder link is multi-hop via `funder_chains`), `analyze_bundle` (M14: grade the bundler/sybil-launch pattern from the clustering — score 0-100 + Normal/Moderate/Heavy/Extreme, additive metadata), `analyze_dev`, `analyze_dev_transfers`, `analyze_liquidity_lock`, `decode_unlock_timestamp`/`apply_unlock_schedule` (M13: fold a locker's unlock time into a time-aware LP-lock verdict), `analyze_launchpad`, `classify_created_tokens`, `extract_mutual_transfers`, `to_float`/`to_int`.
+- Public: `analyze_age`, `analyze_holders`, `analyze_clusters` (union-find of shared-funder + mutual-transfer links; M14: shared-funder link is multi-hop via `funder_chains`), `analyze_bundle` (M14: grade the bundler/sybil-launch pattern from the clustering — score 0-100 + Normal/Moderate/Heavy/Extreme, additive metadata), `analyze_buy_timing` (M15: same-block / launch-window buy-cohort detection from normalized transfers, additive metadata), `analyze_dev`, `analyze_dev_transfers`, `analyze_liquidity_lock`, `decode_unlock_timestamp`/`apply_unlock_schedule` (M13: fold a locker's unlock time into a time-aware LP-lock verdict), `analyze_launchpad`, `classify_created_tokens`, `extract_mutual_transfers`, `to_float`/`to_int`.
 - Dependencies: `launchpad_registry`, `models.token`, `settings`.
 - Extension: add an `analyze_*` helper returning a typed model, wire it into orchestrator + scorer.
 - Failure modes: pure and defensive; never raise on partial data. Holder analysis peels out the LP pair so top1/top10/concentration reflect real wallets.
@@ -614,7 +614,7 @@ router is mapped, and the launchpad registries are empty by design.
 6. **Transfers** — fetched **once** (`transfer_scan_pages`), normalized oldest-first, reused by clusters/dev/insiders.
 7. **Clusters** — multi-hop funder trace (concurrent, bounded by `funder_max_hops`) + mutual transfers → `analyze_clusters` (union-find), then `analyze_bundle` grades the bundler/sybil pattern (M14).
 8. **Dev/creator** — dev holding %, dev transfers, creator launch scan (classify by liquidity) → `analyze_dev`.
-9. **Wallet intel** — build `known_contracts` (LP + contract holders) → `profile_token_wallets` (insiders; smart list inert; persists) → `_watchlist_hits`.
+9. **Wallet intel** — build `known_contracts` (LP + contract holders) → `analyze_buy_timing` (M15: same-block / launch-window buy cohort from the already-fetched transfers) → `profile_token_wallets` (insiders; smart list inert; persists) → `_watchlist_hits`.
 10. **Liquidity lock** — only if a pair exists → `analyze_liquidity_lock`; if a registry-verified locker with an unlock-read spec holds the LP, one `eth_call` reads its unlock time → `apply_unlock_schedule` (M13; inert on empty registry / spec-less lockers).
 11. **Launchpad** — **gated** on `has_enabled_launchpads()`; only then fetch creation evidence (RPC-first, Blockscout fallback) → `analyze_launchpad`.
 12. **Lore** — only if `include_lore` → `build_lore`.
@@ -899,6 +899,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M12 — Full holder set (paged) | Done | `get_token_holders_paged` (bounded `holder_scan_pages`) + `/counters` true holder count feeding `analyze_holders` |
 | M13 — LP lock duration & unlock schedule | Done | `locker_unlock_spec` + `decode_unlock_timestamp`/`apply_unlock_schedule` (one `eth_call` reads a verified locker's unlock time; past unlock → `unlocked`) + near-term-unlock signal in `scoring` |
 | M14 — Funder-graph depth & bundler detection | Done | multi-hop `_trace_funders` (bounded `funder_max_hops`, memoized), multi-hop union in `analyze_clusters`, `analyze_bundle` (0-100 bundle score + Normal/Moderate/Heavy/Extreme) + bundler signal in `scoring` |
+| M15 — Same-block / coordinated-buy timing | Done | block captured in `normalize_transfers`; `analyze_buy_timing` (same-block + launch-window cohort of distinct first-buyers) + coordinated-timing signal in `scoring` |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |

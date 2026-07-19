@@ -295,6 +295,7 @@ function renderAnalysis(data) {
       ${card("Clusters", data.clusters?.clusters?.length ?? 0)}
       ${card("Clustered %", fmtPct(data.clusters?.clustered_percentage))}
       ${card("Bundling", esc(data.bundle?.classification || "Normal"), data.bundle?.bundled_wallets ? `${esc(data.bundle.bundled_wallets)} wallets · ${fmtPct(data.bundle.bundled_percentage)}` : "no bundle detected")}
+      ${card("Buy Timing", esc(data.buy_timing?.coordinated ? "COORDINATED" : "NORMAL"), data.buy_timing?.same_block_wallets ? `${esc(data.buy_timing.same_block_wallets)} wallets same block` : "no launch cohort")}
     </section>
 
     <section class="market-grid">

@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     # traced chain) is treated as a bundler: one funder -> many fresh wallets.
     bundler_min_cluster_wallets: int = 3
 
+    # --- Same-block / coordinated-buy timing (M15) ---
+    # Distinct buyers landing in one block (or within `coordinated_buy_window_seconds`
+    # of each other) is a coordination signal independent of funding source. A cohort
+    # counts only at/above this many wallets, so an ordinary 1-2 buyer block never flags.
+    coordinated_buy_min_cohort: int = 3
+    # Buyers within this many seconds of each other (when block numbers are unavailable)
+    # count as the same timing cohort. 0 == same-block only.
+    coordinated_buy_window_seconds: int = 2
+
     # --- Persistent watchlist ---
     watchlist_db_path: str = "data/watchlist.db"
     watchlist_refresh_enabled: bool = True

@@ -144,6 +144,22 @@ class BundleAnalysis(BaseModel):
     detail: str | None = None
 
 
+class BuyTimingAnalysis(BaseModel):
+    """Same-block / within-seconds-of-launch buy coordination (M15). Additive metadata.
+
+    Wallets buying in the same block, or within a few seconds of the first buy, are
+    coordinated regardless of who funded them — a control signal complementary to the
+    funder-based clusters. `same_block_wallets` is the size of the largest same-block
+    cohort; `first_window_wallets` is how many distinct buyers landed inside the launch
+    window. Both exclude the mint/creator/LP so a normal launch is not mistaken for a cohort.
+    """
+    same_block_wallets: int = 0
+    same_block_number: int | None = None
+    first_window_wallets: int = 0
+    coordinated: bool = False
+    detail: str | None = None
+
+
 # --- Dev / creator ---
 
 
@@ -350,6 +366,7 @@ class TokenAnalysisResponse(BaseModel):
     holders: HolderDistribution | None = None
     clusters: ClusterAnalysis | None = None
     bundle: BundleAnalysis | None = None
+    buy_timing: BuyTimingAnalysis | None = None
     dev: DevProfile | None = None
     liquidity_lock: LiquidityLock | None = None
     launchpad: LaunchpadInfo | None = None

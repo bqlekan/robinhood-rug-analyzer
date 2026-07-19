@@ -531,8 +531,16 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M15 — Same-block / coordinated-buy timing detection
+### M15 — Same-block / coordinated-buy timing detection ✅ COMPLETE
 
+- **Status:** ✅ **COMPLETE** (2026-07-19). `normalize_transfers` now captures each transfer's
+  `block` (Blockscout `block_number`); new pure `analyzers.analyze_buy_timing` flags coordination
+  from the transfers **already fetched** (no extra call): it takes each wallet's first acquisition
+  (excluding mint/creator/LP/known contracts) and detects the largest same-block cohort plus the
+  count of buyers landing within `coordinated_buy_window_seconds` of the first buy. A cohort of
+  `coordinated_buy_min_cohort`+ distinct wallets (default 3) sets `coordinated=True`, which adds a
+  medium `clusters` signal in `scoring`; single/low-buyer tokens return `coordinated=False` and add
+  nothing. Surfaced as additive `buy_timing` metadata on the response + a UI card. 417 tests pass.
 - **Goal:** Flag wallets buying in the same block or within seconds of launch as coordinated,
   independent of funding source.
 - **Why it matters:** Strong coordinated-control signal on data largely already fetched
