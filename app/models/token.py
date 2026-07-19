@@ -330,6 +330,9 @@ class WatchlistHit(BaseModel):
     kind: str  # "smart" | "insider"
     proxy_score: int | None = None
     holding_percentage: float | None = None
+    # M17: how many OTHER tokens this wallet has been recorded active on (persisted
+    # cross-token memory). 0 = first sighting; higher = a recurring wallet with history.
+    prior_tokens: int = 0
 
 
 # --- Scoring ---

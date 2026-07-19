@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     # wallets, so requiring a floor keeps "survived" meaning "still a live token".
     smart_wallet_survival_min_holders: int = 50
 
+    # --- Persistent wallet reputation (M17) ---
+    # A watchlisted wallet appearing on this token is scored as reputation risk only once
+    # it has been seen on at least this many OTHER tokens (prior-token history). A floor
+    # avoids a false signal on a wallet's first-ever sighting (history == just this token).
+    wallet_reputation_min_prior_tokens: int = 2
+
     # --- Funder graph / bundler detection (M14) ---
     # How many hops back to trace each holder's funding chain. 1 == prior single-hop
     # behaviour; 2-3 catches funder->intermediary->fresh-wallet bundling. Bounded because

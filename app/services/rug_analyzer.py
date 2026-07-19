@@ -193,18 +193,34 @@ async def _scan_creator_launches(creator: str | None, this_token: str) -> list:
     return analyzers.classify_created_tokens(created)
 
 
-def _watchlist_hits(holder_addresses: list[str]) -> list[WatchlistHit]:
-    """Cross-reference sampled holders against the persisted smart/insider watchlist."""
+def _watchlist_hits(holder_addresses: list[str], this_token: str | None = None) -> list[WatchlistHit]:
+    """Cross-reference sampled holders against the persisted smart/insider watchlist.
+
+    M17: each hit is enriched with `prior_tokens` — how many OTHER tokens the wallet was
+    flagged active on — so a wallet's cross-token reputation surfaces on the next token.
+    """
     try:
         known = watchlist_store.known_addresses()
     except Exception as exc:
         logger.warning("Watchlist lookup failed: %s", exc)
         return []
+    hit_addrs = [addr for addr in holder_addresses if known.get(addr.lower())]
+    try:
+        prior = watchlist_store.prior_token_counts(hit_addrs, exclude_token=this_token)
+    except Exception as exc:  # cross-token memory is best-effort; never break analysis
+        logger.warning("Prior-token lookup failed: %s", exc)
+        prior = {}
     hits: list[WatchlistHit] = []
-    for addr in holder_addresses:
-        info = known.get(addr.lower())
-        if info:
-            hits.append(WatchlistHit(address=addr, kind=info["kind"], proxy_score=info.get("proxy_score")))
+    for addr in hit_addrs:
+        info = known[addr.lower()]
+        hits.append(
+            WatchlistHit(
+                address=addr,
+                kind=info["kind"],
+                proxy_score=info.get("proxy_score"),
+                prior_tokens=prior.get(addr.lower(), 0),
+            )
+        )
     return hits
 
 
@@ -355,7 +371,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         transfers=transfers,  # reuse the already-fetched transfers; no second network call
         known_contracts=known_contracts,
     )
-    watchlist_hits = _watchlist_hits(list(sampled_holder_set))
+    watchlist_hits = _watchlist_hits(list(sampled_holder_set), this_token=normalized)
 
     # Liquidity lock: inspect LP token holders of the pair.
     liquidity_lock = None
@@ -442,6 +458,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         privileges=privileges,
         bundle=bundle,
         buy_timing=buy_timing,
+        watchlist_hits=watchlist_hits,
     )
 
     return TokenAnalysisResponse(

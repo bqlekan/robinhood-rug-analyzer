@@ -594,7 +594,17 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M17 — Persistent wallet reputation (cross-token memory)
+### M17 — Persistent wallet reputation (cross-token memory) ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-19). No schema change was needed: the `wallet_activity`
+  table (address → tokens) already recorded every token each flagged wallet touched, so
+  cross-token memory was a query away. New `watchlist_store.prior_token_counts` runs one bounded
+  `COUNT(DISTINCT token_address) GROUP BY wallet` (excluding the token under analysis), defensive to
+  an empty/missing DB. `_watchlist_hits` now enriches each hit with `prior_tokens`, and
+  `score_token` grows a reputation signal — "Repeat insider wallets present" (medium/high, escalates
+  with count/history) and a lighter "Recurring smart wallets present" (low, informational) — gated by
+  `wallet_reputation_min_prior_tokens` (default 2) so a wallet's first sighting never scores. The
+  frontend hit row now shows "seen on N prior tokens". 434 tests pass (+10).
 
 **Goal:** Remember insider/cluster/smart wallets across tokens so a wallet seen on one token is recognized on the next.
 

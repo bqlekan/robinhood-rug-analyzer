@@ -200,6 +200,39 @@ def known_addresses() -> dict[str, dict]:
         return {r["address"]: {"kind": r["kind"], "proxy_score": r["proxy_score"]} for r in rows}
 
 
+def prior_token_counts(addresses: list[str], exclude_token: str | None = None) -> dict[str, int]:
+    """For each address, how many DISTINCT tokens it has been recorded active on (M17).
+
+    This is the persisted cross-token memory: a wallet flagged on prior tokens carries a
+    reputation into the next one. Counts distinct `token_address` from `wallet_activity`,
+    excluding the token under analysis so "prior" means "other tokens", not this one.
+    Defensive: an empty/missing DB or unknown address yields 0, never raises.
+    """
+    if not addresses:
+        return {}
+    addrs = [a.lower() for a in addresses if a]
+    if not addrs:
+        return {}
+    exclude = (exclude_token or "").lower()
+    placeholders = ",".join("?" for _ in addrs)
+    try:
+        with _LOCK:
+            conn = _connect()
+            rows = conn.execute(
+                f"""
+                SELECT wallet, COUNT(DISTINCT token_address) AS n
+                FROM wallet_activity
+                WHERE wallet IN ({placeholders}) AND token_address != ?
+                GROUP BY wallet
+                """,
+                (*addrs, exclude),
+            ).fetchall()
+        return {r["wallet"]: r["n"] for r in rows}
+    except Exception as exc:  # store is a cache, never break analysis
+        logger.warning("prior_token_counts failed: %s", exc)
+        return {}
+
+
 def refresh_addresses(limit: int) -> list[str]:
     """Addresses due for a background refresh, oldest-refreshed first."""
     with _LOCK:

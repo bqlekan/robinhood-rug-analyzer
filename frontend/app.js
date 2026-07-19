@@ -227,7 +227,7 @@ function renderInsiders(insiders, hits) {
       (h) => `
       <li class="signal signal-medium">
         <strong>${esc(h.address)}</strong>
-        <span>Watchlisted ${esc(h.kind)}${h.proxy_score != null ? ` · proxy ${esc(h.proxy_score)}` : ""} holds this token</span>
+        <span>Watchlisted ${esc(h.kind)}${h.proxy_score != null ? ` · proxy ${esc(h.proxy_score)}` : ""} holds this token${h.prior_tokens ? ` · seen on ${esc(h.prior_tokens)} prior token${h.prior_tokens === 1 ? "" : "s"}` : ""}</span>
       </li>`,
     )
     .join("");

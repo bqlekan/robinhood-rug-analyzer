@@ -22,6 +22,7 @@ from app.models.token import (
     TokenAge,
     TokenLore,
     TokenMarketData,
+    WatchlistHit,
 )
 
 LIMITATIONS = [
@@ -92,6 +93,7 @@ def score_token(
     privileges: ContractPrivileges | None = None,
     bundle: BundleAnalysis | None = None,
     buy_timing: BuyTimingAnalysis | None = None,
+    watchlist_hits: list[WatchlistHit] | None = None,
 ) -> RugAnalysis:
     signals: list[RiskSignal] = []
 
@@ -162,6 +164,29 @@ def score_token(
     if buy_timing and buy_timing.coordinated:
         _sig(signals, "Coordinated buy timing", "clusters", "medium", 12,
              buy_timing.detail or "Multiple wallets bought in the same block / launch window; likely coordinated.")
+
+    # --- Persistent wallet reputation (M17) ---
+    # A watchlisted smart/insider wallet holding this token carries a cross-token history.
+    # Only wallets with a non-trivial prior-token count score (min_prior_tokens floor) so a
+    # first sighting is not penalised. Insiders with history are the stronger rug signal;
+    # recurring smart wallets are informational, so they get a lighter weight.
+    if watchlist_hits:
+        min_prior = settings.wallet_reputation_min_prior_tokens
+        recurring = [h for h in watchlist_hits if (h.prior_tokens or 0) >= min_prior]
+        insider_rep = [h for h in recurring if h.kind == "insider"]
+        smart_rep = [h for h in recurring if h.kind == "smart"]
+        if insider_rep:
+            top = max(h.prior_tokens for h in insider_rep)
+            severity = "high" if (len(insider_rep) >= 2 or top >= 4) else "medium"
+            points = 20 if severity == "high" else 12
+            _sig(signals, "Repeat insider wallets present", "clusters", severity, points,
+                 f"{len(insider_rep)} wallet(s) flagged as insiders on prior tokens hold this token "
+                 f"(up to {top} prior tokens); recurring insider presence across launches.")
+        if smart_rep:
+            top = max(h.prior_tokens for h in smart_rep)
+            _sig(signals, "Recurring smart wallets present", "clusters", "low", 4,
+                 f"{len(smart_rep)} recurring smart wallet(s) hold this token (up to {top} prior tokens). "
+                 "Informational: estimated from free on-chain behavior, not verified ROI.")
 
     # --- Dev ---
     if dev:
