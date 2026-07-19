@@ -167,6 +167,12 @@ class LiquidityLock(BaseModel):
     status: str  # "locked" | "burned" | "unlocked" | "unknown"
     locked_percentage: float | None = None
     locker_label: str | None = None
+    # M13: the locker/burn address holding the LP, and its unlock schedule when the
+    # locker exposes one. unlock_timestamp is unix seconds; unlock_in_days is the
+    # horizon from "now" (negative = already unlocked). Both None when unread/unknown.
+    locker_address: str | None = None
+    unlock_timestamp: int | None = None
+    unlock_in_days: float | None = None
     detail: str | None = None
 
 

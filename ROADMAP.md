@@ -464,8 +464,18 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M13 — LP lock duration & unlock schedule
+### M13 — LP lock duration & unlock schedule ✅ COMPLETE
 
+- **Status:** ✅ **COMPLETE** (2026-07-19). `launchpad_registry.locker_unlock_spec(address)` returns
+  an unlock-read spec (`selector` + `word_index`) for a verified locker that declares one;
+  `analyzers.decode_unlock_timestamp` + `apply_unlock_schedule` fold the read unix time into a
+  time-aware `LiquidityLock` (`unlock_timestamp`, `unlock_in_days`), downgrading an already-past
+  unlock to `unlocked`. The analyze pipeline fires **one** `eth_call` only when a matched locker
+  has a spec (reusing the M10 `rpc_client`), so it is **inert in production** (empty `LP_LOCKERS`)
+  and for spec-less lockers/burn addresses — degrading to the prior presence-only verdict, never a
+  false "safe". `scoring` adds a high-severity "LP lock expiring soon" signal when the unlock is
+  within `lp_lock_near_term_days` (default 30); a long lock adds nothing (a lock's reassurance is
+  the absence of this signal). 397 tests pass.
 - **Goal:** Beyond burn/known-locker *presence*, read locker-contract state for the *unlock
   timestamp*, turning the binary lock signal into a time-aware one.
 - **Why it matters:** A lock unlocking tomorrow is nearly as dangerous as no lock. Presence

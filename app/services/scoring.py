@@ -6,6 +6,7 @@ Every risk dimension contributes zero or more `RiskSignal`s with point values.
 The final score is the capped sum, so each contribution stays auditable in the UI.
 """
 
+from app.core.config import settings
 from app.models.token import (
     ClusterAnalysis,
     ContractPrivileges,
@@ -164,6 +165,13 @@ def score_token(
             _sig(signals, "Liquidity not locked", "liquidity", "high", 20, "No known locker or burn address holds the LP; liquidity can be pulled.")
         elif liquidity_lock.status == "unknown":
             _sig(signals, "LP lock status unknown", "liquidity", "medium", 8, "Could not confirm whether liquidity is locked or burned.")
+        # M13: a near-term unlock is nearly as dangerous as no lock — presence alone
+        # gave false confidence. Only fires when a real unlock schedule was read; a lock
+        # with no schedule or a long horizon keeps the reassurance a lock normally gives.
+        elif liquidity_lock.status == "locked" and liquidity_lock.unlock_in_days is not None:
+            if liquidity_lock.unlock_in_days <= settings.lp_lock_near_term_days:
+                _sig(signals, "LP lock expiring soon", "liquidity", "high", 18,
+                     f"LP lock unlocks in ~{liquidity_lock.unlock_in_days} days; liquidity can be pulled once it expires.")
 
     # --- Launchpad ---
     if launchpad and launchpad.name == "Unknown":

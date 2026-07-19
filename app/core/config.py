@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # request volume in check (paging multiplies requests). 1 == prior single-page behaviour.
     holder_scan_pages: int = 4
 
+    # M13: an LP lock unlocking within this many days is treated as near-term — nearly
+    # as dangerous as no lock — and scored as a high signal rather than the reassurance
+    # a long lock gives. A lock unlocking beyond this horizon scores as before.
+    lp_lock_near_term_days: int = 30
+
     # --- Scan tiering (M2) ---
     # A cheap pre-screen ranks candidates using ONLY list_tokens metadata (no extra
     # requests), promoting anything not confidently low-risk into full deep analysis.

@@ -56,7 +56,15 @@ BURN_ADDRESSES: set[str] = {
 }
 
 # Verified LP locker records. EMPTY in production by design (see module docstring).
-#   {"address": "0x...", "label": "UNCX", "source": "...", "verified_date": "..."}
+#   {"address": "0x...", "label": "UNCX", "source": "...", "verified_date": "...",
+#    "unlock_selector": "0x<4-byte>", "unlock_word_index": 0}
+# M13 (unlock schedule): a locker MAY declare how to read its unlock timestamp so the
+# binary lock signal becomes time-aware. Optional and evidence-gated — a locker without a
+# spec degrades to the prior presence-only behaviour, never a fabricated schedule.
+#   unlock_selector:   4-byte eth_call selector for a no-arg view returning the unlock
+#                      unix timestamp (e.g. `unlockDate()` / `lockTime()`), hex "0x........".
+#   unlock_word_index: which 32-byte word of the ABI-encoded return holds the timestamp
+#                      (default 0). Lets a struct-returning getter point at the right slot.
 LP_LOCKERS: list[dict] = []
 
 # Established assets (stablecoins, wrapped majors, blue chips) to exclude from the
@@ -227,3 +235,22 @@ def locker_label(address: str | None) -> str | None:
 
 def is_burn_address(address: str | None) -> bool:
     return normalize(address) in BURN_ADDRESSES
+
+
+def locker_unlock_spec(address: str | None) -> dict | None:
+    """Return the unlock-read spec for a known enabled locker, or None (M13).
+
+    A spec is present only when the verified locker entry declares an `unlock_selector`.
+    Burn addresses have no schedule (a burn is permanent), so they return None here.
+    """
+    addr = normalize(address)
+    if not addr or addr in BURN_ADDRESSES:
+        return None
+    for e in LP_LOCKERS:
+        if not e.get("enabled", True) or normalize(e.get("address")) != addr:
+            continue
+        selector = e.get("unlock_selector")
+        if not selector:
+            return None
+        return {"selector": selector, "word_index": int(e.get("unlock_word_index", 0))}
+    return None

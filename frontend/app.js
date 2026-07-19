@@ -289,7 +289,7 @@ function renderAnalysis(data) {
       ${card("LP Pool Holds", fmtPct(h?.lp_percentage), h?.lp_address ? shortAddr(h.lp_address) : "no LP detected")}
       ${card("Dev Holdings", fmtPct(d?.dev_holding_percentage))}
       ${card("Dev Reputation", esc(d?.reputation || "unknown"))}
-      ${card("Liquidity Lock", esc((ll?.status || "unknown").toUpperCase()))}
+      ${card("Liquidity Lock", esc((ll?.status || "unknown").toUpperCase()), ll?.unlock_in_days != null ? (ll.unlock_in_days > 0 ? `unlocks in ~${esc(ll.unlock_in_days)}d` : "lock expired") : "")}
       ${card("Sellability", esc((data.honeypot?.status || "unknown").toUpperCase()), data.honeypot?.sell_tax_percentage != null ? `~${esc(data.honeypot.sell_tax_percentage)}% round-trip loss` : "simulation")}
       ${card("Launchpad", esc(data.launchpad?.name || "Unknown"))}
       ${card("Clusters", data.clusters?.clusters?.length ?? 0)}

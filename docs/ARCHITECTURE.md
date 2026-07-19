@@ -213,20 +213,14 @@ frontend; owns the lifespan-scoped background scheduler.
 - Detects mint/pause/blacklist/fee-mutation powers from the verified ABI; a confirmed renounce (owner == zero) silences the retained-power signals.
 - Failure modes: unverified/no ABI -> `analyzed=False` (never a false "no powers"); unknown ownership keeps powers flagged; RPC errors -> `None`, never raises.
 
-**`app/services/contract_privileges.py`** — live authority/privilege reads (M11).
-- Public: `fetch_privileges(address, payload) -> ContractPrivileges` (reuses the shared `get_smart_contract` payload, no extra request); `infer_privileges(payload, owner_hex, paused_hex)` (pure).
-- Dependencies: `rpc_client.eth_call` for live `owner()`/`getOwner()`/`paused()`; ABI from the passed contract payload.
-- Detects: mint/pause/blacklist/fee-mutation powers (ABI); ownership renounced vs retained vs unconfirmed; live `paused()` state.
-- Failure modes: unverified/no-ABI -> `analyzed=False` (never a false "no powers"); any RPC failure -> `None`; only a confirmed renounce silences the retained-power signals.
-
 **`app/services/launchpad_registry.py`** — on-chain-marker registry (pure).
-- Public: `detect_launchpad(creator, contract_name, tags)`, `match_creation_evidence(factory_to, log_topics)`, `has_enabled_launchpads()`, `is_established_token(symbol, name)`, `locker_label(address)`, `is_burn_address(address)`, `normalize(...)`.
+- Public: `detect_launchpad(creator, contract_name, tags)`, `match_creation_evidence(factory_to, log_topics)`, `has_enabled_launchpads()`, `is_established_token(symbol, name)`, `locker_label(address)`, `is_burn_address(address)`, `locker_unlock_spec(address)` (M13: unlock-read spec for a verified locker, or None), `normalize(...)`.
 - Data: `LAUNCHPADS` and `LP_LOCKERS` are **empty by design in production**; `BURN_ADDRESSES` holds `0x0` and `0x..dead`.
 - Extension: add verified entries (with `source`, `verified_date`, `enabled: True`); add established symbols / name hints.
 - Failure modes: no crashes; empty registry deliberately degrades to "Unknown" rather than a false "locked"/"safe" claim.
 
 **`app/services/analyzers.py`** — pure per-dimension analysis helpers.
-- Public: `analyze_age`, `analyze_holders`, `analyze_clusters` (union-find of shared-funder + mutual-transfer links), `analyze_dev`, `analyze_dev_transfers`, `analyze_liquidity_lock`, `analyze_launchpad`, `classify_created_tokens`, `extract_mutual_transfers`, `to_float`/`to_int`.
+- Public: `analyze_age`, `analyze_holders`, `analyze_clusters` (union-find of shared-funder + mutual-transfer links), `analyze_dev`, `analyze_dev_transfers`, `analyze_liquidity_lock`, `decode_unlock_timestamp`/`apply_unlock_schedule` (M13: fold a locker's unlock time into a time-aware LP-lock verdict), `analyze_launchpad`, `classify_created_tokens`, `extract_mutual_transfers`, `to_float`/`to_int`.
 - Dependencies: `launchpad_registry`, `models.token`, `settings`.
 - Extension: add an `analyze_*` helper returning a typed model, wire it into orchestrator + scorer.
 - Failure modes: pure and defensive; never raise on partial data. Holder analysis peels out the LP pair so top1/top10/concentration reflect real wallets.
@@ -621,7 +615,7 @@ router is mapped, and the launchpad registries are empty by design.
 7. **Clusters** — funder trace (concurrent) + mutual transfers → `analyze_clusters` (union-find).
 8. **Dev/creator** — dev holding %, dev transfers, creator launch scan (classify by liquidity) → `analyze_dev`.
 9. **Wallet intel** — build `known_contracts` (LP + contract holders) → `profile_token_wallets` (insiders; smart list inert; persists) → `_watchlist_hits`.
-10. **Liquidity lock** — only if a pair exists → `analyze_liquidity_lock`.
+10. **Liquidity lock** — only if a pair exists → `analyze_liquidity_lock`; if a registry-verified locker with an unlock-read spec holds the LP, one `eth_call` reads its unlock time → `apply_unlock_schedule` (M13; inert on empty registry / spec-less lockers).
 11. **Launchpad** — **gated** on `has_enabled_launchpads()`; only then fetch creation evidence (RPC-first, Blockscout fallback) → `analyze_launchpad`.
 12. **Lore** — only if `include_lore` → `build_lore`.
 13. **Honeypot** — `honeypot_sim.simulate` reusing the market pair (inert unless a router is mapped).
@@ -903,6 +897,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M10 — Honeypot / sell-tax simulation | Done | `honeypot_sim` + `route_discovery` + `core/honeypot_artifact` |
 | M11 — Contract-privilege / authority reads | Done | `contract_privileges` (ABI power detection + live `owner()`/`paused()` reads) + privilege signals in `scoring` |
 | M12 — Full holder set (paged) | Done | `get_token_holders_paged` (bounded `holder_scan_pages`) + `/counters` true holder count feeding `analyze_holders` |
+| M13 — LP lock duration & unlock schedule | Done | `locker_unlock_spec` + `decode_unlock_timestamp`/`apply_unlock_schedule` (one `eth_call` reads a verified locker's unlock time; past unlock → `unlocked`) + near-term-unlock signal in `scoring` |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |

@@ -321,6 +321,14 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         liquidity_lock = analyzers.analyze_liquidity_lock(
             lp_holders, (lp_info or {}).get("total_supply"), (lp_info or {}).get("decimals")
         )
+        # M13: if a registry-verified locker holds the LP and declares how to read its
+        # unlock time, do one eth_call and fold the schedule in. Burn addresses and
+        # spec-less lockers return no spec, so this is a no-op there (presence-only).
+        unlock_spec = launchpad_registry.locker_unlock_spec(liquidity_lock.locker_address)
+        if unlock_spec:
+            raw = await rpc_client.eth_call(liquidity_lock.locker_address, unlock_spec["selector"])
+            unlock_ts = analyzers.decode_unlock_timestamp(raw, unlock_spec["word_index"])
+            liquidity_lock = analyzers.apply_unlock_schedule(liquidity_lock, unlock_ts)
 
     # Launchpad. Include the contract intel's template as an extra name hint so
     # OpenZeppelin/Uniswap/CCIP contracts surface even without a deployer match.

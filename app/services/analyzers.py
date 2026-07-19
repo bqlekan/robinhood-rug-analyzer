@@ -432,6 +432,7 @@ def analyze_liquidity_lock(pair_lp_holders: list[dict], total_lp_supply: object,
 
     locked_pct = 0.0
     best_label: str | None = None
+    best_address: str | None = None
     for item in pair_lp_holders:
         addr_obj = item.get("address") or {}
         addr = addr_obj.get("hash")
@@ -444,6 +445,7 @@ def analyze_liquidity_lock(pair_lp_holders: list[dict], total_lp_supply: object,
             locked_pct += units_pct
             if best_label is None:
                 best_label = label
+                best_address = addr
 
     if best_label and locked_pct > 0:
         status = "burned" if best_label == "Burn address" else "locked"
@@ -451,6 +453,7 @@ def analyze_liquidity_lock(pair_lp_holders: list[dict], total_lp_supply: object,
             status=status,
             locked_percentage=round(locked_pct, 2),
             locker_label=best_label,
+            locker_address=best_address,
             detail=f"{round(locked_pct, 2)}% of LP tokens held by {best_label}.",
         )
 
@@ -460,6 +463,65 @@ def analyze_liquidity_lock(pair_lp_holders: list[dict], total_lp_supply: object,
         locker_label=None,
         detail="No known locker or burn address holds a meaningful share of LP tokens.",
     )
+
+
+def decode_unlock_timestamp(raw: str | None, word_index: int = 0) -> int | None:
+    """Decode a locker's unlock timestamp from an `eth_call` return (M13). Pure.
+
+    `raw` is hex-encoded ABI return data (0x + 32-byte words). Reads the word at
+    `word_index` as a uint256 unix timestamp. Returns None on any malformed/empty
+    input or an implausible value (0 / far-future overflow), so a bad read degrades
+    to "no schedule" rather than a fabricated one.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    hexstr = raw[2:] if raw.startswith(("0x", "0X")) else raw
+    if len(hexstr) < (word_index + 1) * 64:
+        return None
+    word = hexstr[word_index * 64:(word_index + 1) * 64]
+    try:
+        value = int(word, 16)
+    except ValueError:
+        return None
+    # 0 means "no lock set"; cap at a sane upper bound (year ~5138) to reject garbage.
+    if value <= 0 or value > 10**11:
+        return None
+    return value
+
+
+def apply_unlock_schedule(
+    lock: LiquidityLock, unlock_timestamp: int | None, *, now: datetime | None = None
+) -> LiquidityLock:
+    """Fold a decoded unlock timestamp into a LiquidityLock (M13). Pure.
+
+    Turns the binary "locked" verdict into a time-aware one: computes the horizon in
+    days and appends it to the detail. A lock whose unlock time has already passed is
+    downgraded to "unlocked" (the LP is now freely withdrawable). When `unlock_timestamp`
+    is None the lock is returned unchanged — presence-only behaviour is preserved.
+    """
+    if unlock_timestamp is None or lock.status not in ("locked", "burned"):
+        return lock
+    ref = now or datetime.now(timezone.utc)
+    unlock_dt = datetime.fromtimestamp(unlock_timestamp, tz=timezone.utc)
+    days = (unlock_dt - ref).total_seconds() / 86400.0
+    days = round(days, 2)
+    iso = unlock_dt.date().isoformat()
+    if days <= 0:
+        return lock.model_copy(update={
+            "status": "unlocked",
+            "unlock_timestamp": unlock_timestamp,
+            "unlock_in_days": days,
+            "detail": (
+                f"{lock.detail} Lock expired on {iso} — LP is now withdrawable."
+                if lock.detail else f"Lock expired on {iso} — LP is now withdrawable."
+            ),
+        })
+    horizon = f"unlocks {iso} (~{days:g} days)."
+    return lock.model_copy(update={
+        "unlock_timestamp": unlock_timestamp,
+        "unlock_in_days": days,
+        "detail": f"{lock.detail} {horizon}" if lock.detail else horizon.capitalize(),
+    })
 
 
 # --- Launchpad ---
