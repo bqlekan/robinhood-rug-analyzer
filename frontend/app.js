@@ -294,6 +294,7 @@ function renderAnalysis(data) {
       ${card("Launchpad", esc(data.launchpad?.name || "Unknown"))}
       ${card("Clusters", data.clusters?.clusters?.length ?? 0)}
       ${card("Clustered %", fmtPct(data.clusters?.clustered_percentage))}
+      ${card("Bundling", esc(data.bundle?.classification || "Normal"), data.bundle?.bundled_wallets ? `${esc(data.bundle.bundled_wallets)} wallets · ${fmtPct(data.bundle.bundled_percentage)}` : "no bundle detected")}
     </section>
 
     <section class="market-grid">

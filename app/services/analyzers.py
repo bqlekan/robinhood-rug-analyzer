@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from app.core.config import settings
 from app.models.token import (
+    BundleAnalysis,
     ClusterAnalysis,
     DevProfile,
     DevTransfer,
@@ -187,10 +188,14 @@ def analyze_clusters(
     holder_funders: dict[str, str | None],
     holder_percentages: dict[str, float | None],
     mutual_transfers: list[tuple[str, str]] | None = None,
+    funder_chains: dict[str, list[str]] | None = None,
 ) -> ClusterAnalysis:
     """Group holders that are coordinated, from two independent link types.
 
-    - shared_funder: holders whose first funding wallet is the same.
+    - shared_funder: holders who share a funding wallet. With `funder_chains` (M14)
+      the link is multi-hop — two holders funded by the same wallet ANYWHERE along
+      their traced chain (funder -> intermediary -> fresh wallet) unify, not just at
+      the immediate hop. `holder_funders` (immediate hop) is the single-hop fallback.
     - mutual_transfer: holders who have transferred the token to each other.
 
     Both are merged with union-find so a wallet linked by either signal lands in
@@ -201,13 +206,21 @@ def analyze_clusters(
     pct_by_addr = {(a or "").lower(): p for a, p in holder_percentages.items()}
     members_set = set(pct_by_addr)
 
-    # 1) shared-funder links
+    # 1) shared-funder links. A chain of length 1 == the prior single-hop behaviour,
+    # so single-hop callers (no funder_chains) get identical results.
+    chains_by_holder = funder_chains or {
+        h: ([f] if f else []) for h, f in holder_funders.items()
+    }
     funder_groups: dict[str, list[str]] = {}
-    for holder, funder in holder_funders.items():
-        if not funder:
-            continue
-        funder_groups.setdefault(funder.lower(), []).append(holder.lower())
-        members_set.add(holder.lower())
+    for holder, chain in chains_by_holder.items():
+        h = holder.lower()
+        for funder in chain:
+            if not funder:
+                continue
+            group = funder_groups.setdefault(funder.lower(), [])
+            if h not in group:  # a holder appears once per funder, even across hops
+                group.append(h)
+            members_set.add(h)
 
     uf = _UnionFind()
     # Record links per NODE (stable keys), not per root: a later union can change a
@@ -277,6 +290,94 @@ def analyze_clusters(
         clusters=clusters[:10],
         clustered_percentage=round(clustered_pct, 4) if clusters else 0.0,
         note=note,
+    )
+
+
+def analyze_bundle(
+    clusters: ClusterAnalysis,
+    creator: str | None = None,
+    funder_chains: dict[str, list[str]] | None = None,
+    *,
+    min_wallets: int | None = None,
+) -> BundleAnalysis:
+    """Grade the bundler / sybil-launch pattern from already-computed clustering (M14). Pure.
+
+    A bundler funds many fresh wallets from one source so they all buy the same token,
+    faking organic distribution. The strongest shared-funder cluster IS the candidate
+    bundle; this scores how dangerous it looks. Additive metadata only — it never
+    changes the cluster/holder scoring, it summarizes it.
+
+    Score (0-100), each signal additive:
+      - bundle size (wallets funded by one source): the core signal.
+      - supply concentrated in the bundle: how much of the float it controls.
+      - the creator sits on the bundle's funding chain: launch was self-funded/sybil.
+    """
+    min_wallets = min_wallets or settings.bundler_min_cluster_wallets
+    creator_l = (creator or "").lower()
+
+    # The bundle = largest shared-funder (or mixed) cluster. Mutual-transfer-only
+    # clusters aren't a funding bundle, so they don't seed one.
+    funder_clusters = [c for c in clusters.clusters if c.link_type in ("shared_funder", "mixed")]
+    if not funder_clusters:
+        return BundleAnalysis(detail="No shared-funder bundle detected in the sampled holders.")
+
+    bundle = max(funder_clusters, key=lambda c: len(c.member_addresses))
+    n_wallets = len(bundle.member_addresses)
+    bundled_pct = bundle.combined_percentage or 0.0
+
+    if n_wallets < min_wallets:
+        return BundleAnalysis(
+            bundled_wallets=n_wallets,
+            bundled_percentage=bundled_pct,
+            top_funder=bundle.funder_address,
+            detail=f"Largest shared-funder group has {n_wallets} wallet(s); below the bundler threshold of {min_wallets}.",
+        )
+
+    # Did the creator fund this bundle (anywhere along the traced chains of its members)?
+    creator_funded = False
+    if creator_l and funder_chains:
+        member_set = set(bundle.member_addresses)
+        for holder, chain in funder_chains.items():
+            if holder.lower() in member_set and creator_l in {(f or "").lower() for f in chain}:
+                creator_funded = True
+                break
+
+    signals: list[str] = []
+    score = 0
+    # Bundle size: 3 wallets -> 30, saturating so a huge bundle can't alone max the score.
+    size_pts = min(45, n_wallets * 10)
+    score += size_pts
+    signals.append(f"{n_wallets} wallets funded by one source ({bundle.funder_address})")
+    # Supply the bundle controls.
+    if bundled_pct >= 25:
+        score += 35
+        signals.append(f"Bundle controls ~{bundled_pct}% of supply")
+    elif bundled_pct >= 10:
+        score += 20
+        signals.append(f"Bundle controls ~{bundled_pct}% of supply")
+    elif bundled_pct > 0:
+        score += 10
+        signals.append(f"Bundle controls ~{bundled_pct}% of supply")
+    if creator_funded:
+        score += 20
+        signals.append("Deployer funds the bundle (self-funded launch)")
+
+    score = min(score, 100)
+    classification = (
+        "Extreme" if score >= 75 else
+        "Heavy" if score >= 50 else
+        "Moderate" if score >= 25 else
+        "Normal"
+    )
+    return BundleAnalysis(
+        score=score,
+        classification=classification,
+        bundled_wallets=n_wallets,
+        bundled_percentage=bundled_pct,
+        top_funder=bundle.funder_address,
+        creator_funded_bundle=creator_funded,
+        signals=signals,
+        detail=f"{classification} bundling: {n_wallets} wallets from one funder hold ~{bundled_pct}% of supply.",
     )
 
 

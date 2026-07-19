@@ -121,6 +121,15 @@ class Settings(BaseSettings):
     # Transfer pages to pull when profiling a token's flow (each ~50 rows).
     transfer_scan_pages: int = 2
 
+    # --- Funder graph / bundler detection (M14) ---
+    # How many hops back to trace each holder's funding chain. 1 == prior single-hop
+    # behaviour; 2-3 catches funder->intermediary->fresh-wallet bundling. Bounded because
+    # each hop multiplies address-transaction lookups (hop count x traced wallets).
+    funder_max_hops: int = 2
+    # A single funder linking at least this many sampled holders (directly or via the
+    # traced chain) is treated as a bundler: one funder -> many fresh wallets.
+    bundler_min_cluster_wallets: int = 3
+
     # --- Persistent watchlist ---
     watchlist_db_path: str = "data/watchlist.db"
     watchlist_refresh_enabled: bool = True

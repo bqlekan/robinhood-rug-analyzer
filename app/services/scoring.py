@@ -8,6 +8,7 @@ The final score is the capped sum, so each contribution stays auditable in the U
 
 from app.core.config import settings
 from app.models.token import (
+    BundleAnalysis,
     ClusterAnalysis,
     ContractPrivileges,
     DevProfile,
@@ -88,6 +89,7 @@ def score_token(
     data_sources: list[str],
     honeypot: HoneypotResult | None = None,
     privileges: ContractPrivileges | None = None,
+    bundle: BundleAnalysis | None = None,
 ) -> RugAnalysis:
     signals: list[RiskSignal] = []
 
@@ -140,6 +142,16 @@ def score_token(
             _sig(signals, "Coordinated holder clusters", "clusters", "high", 18, f"Wallets sharing a common funder hold ~{pct}% of supply; possible coordinated control.")
         elif pct >= 10:
             _sig(signals, "Holder clusters detected", "clusters", "medium", 10, f"Shared-funder wallets hold ~{pct}% of supply.")
+
+    # --- Bundler / sybil launch (M14) ---
+    # The bundle score is additive metadata; scoring reacts only to a positively
+    # classified bundle (Heavy/Extreme), so a Normal/Moderate pattern adds nothing.
+    # The cluster signals above already cover generic shared-funder concentration.
+    if bundle and bundle.classification in ("Heavy", "Extreme"):
+        severity = "high" if bundle.classification == "Extreme" else "medium"
+        points = 18 if bundle.classification == "Extreme" else 10
+        _sig(signals, "Bundled / sybil launch", "clusters", severity, points,
+             bundle.detail or f"{bundle.classification} bundling detected: {bundle.bundled_wallets} wallets from one funder.")
 
     # --- Dev ---
     if dev:

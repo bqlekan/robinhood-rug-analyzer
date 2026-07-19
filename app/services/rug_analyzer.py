@@ -88,26 +88,62 @@ def _dev_holding_pct(creator: str | None, holder_distribution) -> float | None:
     return None
 
 
-async def _trace_funders(holder_addresses: list[str]) -> dict[str, str | None]:
-    """For each holder, find the wallet that first sent it native funds (for clustering).
+async def _first_funder(addr: str) -> str | None:
+    """The wallet that first sent `addr` native funds (approximates its funder)."""
+    txs = await blockscout_client.get_address_transactions(addr)
+    incoming = [t for t in txs if ((t.get("to") or {}).get("hash") or "").lower() == addr.lower()]
+    if not incoming:
+        return None
+    earliest = incoming[-1]  # Blockscout returns newest-first.
+    funder = (earliest.get("from") or {}).get("hash")
+    return funder.lower() if funder else None
 
-    Bounded and best-effort: runs a handful of concurrent Blockscout lookups.
+
+async def _trace_funders(holder_addresses: list[str]) -> tuple[dict[str, str | None], dict[str, list[str]]]:
+    """Trace each holder's funding chain back up to `funder_max_hops` hops (M14).
+
+    Single-hop only found `holder -> funder`; the sybil-launch pattern is
+    `funder -> intermediary -> fresh wallet`, invisible at one hop. Tracing deeper lets
+    two holders funded by the same wallet *anywhere* along their chains unify.
+
+    Returns `(immediate_funders, chains)`:
+      - immediate_funders: {holder: first-hop funder} — the legacy single-hop map.
+      - chains: {holder: [hop1, hop2, ...]} — the funders walked, nearest hop first.
+
+    Bounded and best-effort: hops are capped by config and each newly-seen funder is
+    looked up once (memoized), so cost is O(distinct wallets), not O(holders x hops).
     """
-    async def first_funder(addr: str) -> tuple[str, str | None]:
-        txs = await blockscout_client.get_address_transactions(addr)
-        # Earliest incoming tx approximates the funding wallet.
-        incoming = [t for t in txs if ((t.get("to") or {}).get("hash") or "").lower() == addr.lower()]
-        if not incoming:
-            return addr, None
-        earliest = incoming[-1]  # Blockscout returns newest-first.
-        return addr, (earliest.get("from") or {}).get("hash")
+    max_hops = max(1, settings.funder_max_hops)
+    funder_cache: dict[str, str | None] = {}
 
-    results = await asyncio.gather(*(first_funder(a) for a in holder_addresses), return_exceptions=True)
-    funders: dict[str, str | None] = {}
+    async def cached_funder(addr: str) -> str | None:
+        key = addr.lower()
+        if key not in funder_cache:
+            funder_cache[key] = await _first_funder(key)
+        return funder_cache[key]
+
+    async def chain_for(holder: str) -> tuple[str, list[str]]:
+        chain: list[str] = []
+        seen = {holder.lower()}
+        current = holder
+        for _ in range(max_hops):
+            funder = await cached_funder(current)
+            if not funder or funder in seen:  # dead end or a funding loop
+                break
+            chain.append(funder)
+            seen.add(funder)
+            current = funder
+        return holder, chain
+
+    results = await asyncio.gather(*(chain_for(a) for a in holder_addresses), return_exceptions=True)
+    immediate: dict[str, str | None] = {}
+    chains: dict[str, list[str]] = {}
     for res in results:
         if isinstance(res, tuple):
-            funders[res[0]] = res[1]
-    return funders
+            holder, chain = res
+            chains[holder] = chain
+            immediate[holder] = chain[0] if chain else None
+    return immediate, chains
 
 
 async def _scan_creator_launches(creator: str | None, this_token: str) -> list:
@@ -273,11 +309,18 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     cluster_addresses = [
         e.address for e in holder_distribution.top_holders if e.address and not e.is_contract
     ][:12]
-    funders = await _trace_funders(cluster_addresses) if cluster_addresses else {}
+    funders, funder_chains = (
+        await _trace_funders(cluster_addresses) if cluster_addresses else ({}, {})
+    )
     holder_pcts = {e.address: e.percentage for e in holder_distribution.top_holders}
     sampled_holder_set = {e.address for e in holder_distribution.top_holders if e.address}
     mutual = analyzers.extract_mutual_transfers(transfers, sampled_holder_set)
-    clusters = analyzers.analyze_clusters(funders, holder_pcts, mutual_transfers=mutual)
+    clusters = analyzers.analyze_clusters(
+        funders, holder_pcts, mutual_transfers=mutual, funder_chains=funder_chains
+    )
+    # M14: grade the bundler / sybil-launch pattern from the clustering just computed
+    # (additive metadata; does not alter cluster/holder scoring). creator is resolved above.
+    bundle = analyzers.analyze_bundle(clusters, creator, funder_chains)
 
     # Dev / creator: holdings, outgoing transfers, and prior launches.
     supply_units = analyzers._supply_units(total_supply, decimals)
@@ -393,6 +436,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         data_sources=data_sources or ["none"],
         honeypot=honeypot,
         privileges=privileges,
+        bundle=bundle,
     )
 
     return TokenAnalysisResponse(
@@ -414,6 +458,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         analysis=analysis,
         contract_intel=ctr_intel,
         contract_privileges=privileges,
+        bundle=bundle,
     )
 
 

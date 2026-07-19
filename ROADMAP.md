@@ -498,8 +498,17 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M14 — Funder-graph depth & bundler detection
+### M14 — Funder-graph depth & bundler detection ✅ COMPLETE
 
+- **Status:** ✅ **COMPLETE** (2026-07-19). `_trace_funders` now walks each holder's funding
+  chain up to `funder_max_hops` (default 2, config-bounded) with per-wallet memoization, so cost
+  is O(distinct wallets) not O(holders × hops); it returns both the legacy immediate-funder map
+  and the per-holder chains. `analyze_clusters` gained a `funder_chains` param and unifies holders
+  sharing a funder *anywhere* along their chain (single-hop callers are unchanged — a length-1
+  chain reproduces the prior result). New pure `analyze_bundle` grades the largest shared-funder
+  group into a 0–100 `BundleAnalysis` with Normal/Moderate/Heavy/Extreme classes (signals: bundle
+  size, supply concentration, deployer-funds-the-bundle), surfaced as additive metadata on the
+  response and a Heavy/Extreme-only signal in `scoring`. 407 tests pass.
 - **Goal:** Trace funding 2–3 hops (not one), and detect bundlers (one funder → many fresh
   wallets → all buy same token/block).
 - **Why it matters:** `_trace_funders` looks one hop back from a single tx page. The classic

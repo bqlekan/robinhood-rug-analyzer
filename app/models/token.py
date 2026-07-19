@@ -126,6 +126,24 @@ class ClusterAnalysis(BaseModel):
     note: str | None = None
 
 
+class BundleAnalysis(BaseModel):
+    """Bundler / sybil-launch summary (M14). Additive metadata — never replaces scoring.
+
+    A bundler funds many fresh wallets from one source so they all buy the same token
+    at launch, faking organic distribution. `score` (0-100) grades how strong that
+    pattern is; `classification` buckets it for the UI.
+    """
+    score: int = 0
+    classification: str = "Normal"  # "Normal" | "Moderate" | "Heavy" | "Extreme"
+    # Wallets tied to the largest single funder (the bundle), and their combined supply %.
+    bundled_wallets: int = 0
+    bundled_percentage: float | None = None
+    top_funder: str | None = None
+    creator_funded_bundle: bool = False
+    signals: list[str] = Field(default_factory=list)
+    detail: str | None = None
+
+
 # --- Dev / creator ---
 
 
@@ -331,6 +349,7 @@ class TokenAnalysisResponse(BaseModel):
     market_data: TokenMarketData | None = None
     holders: HolderDistribution | None = None
     clusters: ClusterAnalysis | None = None
+    bundle: BundleAnalysis | None = None
     dev: DevProfile | None = None
     liquidity_lock: LiquidityLock | None = None
     launchpad: LaunchpadInfo | None = None
