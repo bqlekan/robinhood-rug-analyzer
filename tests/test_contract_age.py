@@ -69,8 +69,8 @@ def _stub_fetches(monkeypatch, *, pair, creation_tx, ts_calls):
     async def fake_holders(addr, n):
         return []
 
-    async def fake_ctr_intel(addr):
-        return None
+    async def fake_smart_contract(addr):
+        return None  # -> contract intel + privileges both degrade to inert, no RPC
 
     async def fake_ts(tx_hash):
         ts_calls.append(tx_hash)
@@ -84,7 +84,7 @@ def _stub_fetches(monkeypatch, *, pair, creation_tx, ts_calls):
     monkeypatch.setattr(blockscout_client, "get_token_info", fake_token_info)
     monkeypatch.setattr(blockscout_client, "get_address_info", fake_address_info)
     monkeypatch.setattr(blockscout_client, "get_token_holders", fake_holders)
-    monkeypatch.setattr(rug_analyzer.contract_intel, "fetch_contract_intel", fake_ctr_intel)
+    monkeypatch.setattr(blockscout_client, "get_smart_contract", fake_smart_contract)
     monkeypatch.setattr(blockscout_client, "get_transaction_timestamp", fake_ts)
     monkeypatch.setattr(blockscout_client, "get_token_transfers", fake_transfers)
     monkeypatch.setattr(rug_analyzer.watchlist_store, "known_addresses", lambda: {})

@@ -16,7 +16,7 @@ from app.models.token import (
 )
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
-from app.services import analyzers, blockscout_client, contract_intel, honeypot_sim, launchpad_registry, rpc_client, wallet_intel, watchlist_store
+from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, honeypot_sim, launchpad_registry, rpc_client, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -214,11 +214,14 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     token_info_task = blockscout_client.get_token_info(normalized)
     address_info_task = blockscout_client.get_address_info(normalized)
     holders_task = blockscout_client.get_token_holders(normalized, settings.holder_sample_size)
-    contract_task = contract_intel.fetch_contract_intel(normalized)
+    # Fetch the verified contract payload once; both source-intel (M9) and privilege
+    # reads (M11) derive from it, so no second Blockscout request fires.
+    contract_task = blockscout_client.get_smart_contract(normalized)
 
-    pairs, token_info, address_info, holders_raw, ctr_intel = await asyncio.gather(
+    pairs, token_info, address_info, holders_raw, contract_payload = await asyncio.gather(
         pairs_task, token_info_task, address_info_task, holders_task, contract_task
     )
+    ctr_intel = contract_intel.infer_from_contract(contract_payload)
 
     best_pair = choose_best_pair(pairs)
     market_data = _build_market_data(best_pair)
@@ -357,6 +360,12 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     # caches an executed verdict, so this stays one sim per analyze.
     honeypot = await honeypot_sim.simulate(normalized, market_data)
 
+    # M11: live contract-privilege / authority reads. Reuses the already-fetched verified
+    # contract payload (no extra Blockscout call) and fires at most two eth_calls for
+    # owner()/paused(). Unverified/no-ABI contracts degrade to analyzed=False (never a
+    # false clean); a confirmed renounce is what silences the retained-power signals.
+    privileges = await contract_privileges.fetch_privileges(normalized, contract_payload)
+
     analysis = score_token(
         age=age,
         market=market_data,
@@ -368,6 +377,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         lore=lore,
         data_sources=data_sources or ["none"],
         honeypot=honeypot,
+        privileges=privileges,
     )
 
     return TokenAnalysisResponse(
@@ -388,6 +398,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         watchlist_hits=watchlist_hits,
         analysis=analysis,
         contract_intel=ctr_intel,
+        contract_privileges=privileges,
     )
 
 

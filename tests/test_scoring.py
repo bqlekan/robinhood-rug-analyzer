@@ -2,6 +2,7 @@
 
 from app.models.token import (
     ClusterAnalysis,
+    ContractPrivileges,
     DevProfile,
     HolderCluster,
     HolderDistribution,
@@ -53,6 +54,50 @@ def test_sellable_and_unknown_add_no_signal_and_no_confidence_change():
         assert r.risk_score == base.risk_score
         # Honeypot is deliberately absent from confidence weights: unchanged either way.
         assert r.confidence == base.confidence
+
+
+def test_retained_powers_score_when_owner_not_renounced():
+    base = score_token(**_clean_kwargs())
+    priv = ContractPrivileges(
+        analyzed=True, ownership_renounced=False, can_mint=True, can_blacklist=True,
+        can_pause=True, can_set_fees=True,
+    )
+    r = score_token(**_clean_kwargs(), privileges=priv)
+    cats = [s for s in r.signals if s.category == "privileges"]
+    assert {s.name for s in cats} == {
+        "Mintable supply", "Blacklist/denylist power", "Pausable transfers", "Mutable fees/tax",
+    }
+    assert r.risk_score - base.risk_score == 18 + 18 + 15 + 10
+
+
+def test_renounced_owner_silences_power_signals():
+    priv = ContractPrivileges(
+        analyzed=True, ownership_renounced=True, can_mint=True, can_blacklist=True,
+        can_pause=True, can_set_fees=True,
+    )
+    r = score_token(**_clean_kwargs(), privileges=priv)
+    assert not any(s.category == "privileges" and s.name != "Trading currently paused" for s in r.signals)
+
+
+def test_unconfirmed_ownership_still_flags_powers():
+    # None ownership (couldn't confirm) must NOT be treated as renounced.
+    priv = ContractPrivileges(analyzed=True, ownership_renounced=None, can_mint=True)
+    r = score_token(**_clean_kwargs(), privileges=priv)
+    assert any(s.name == "Mintable supply" for s in r.signals)
+
+
+def test_live_paused_scores_critical_regardless_of_ownership():
+    priv = ContractPrivileges(analyzed=True, ownership_renounced=True, can_pause=True, is_paused=True)
+    r = score_token(**_clean_kwargs(), privileges=priv)
+    assert any(s.name == "Trading currently paused" and s.severity == "critical" for s in r.signals)
+
+
+def test_unanalyzed_privileges_add_nothing():
+    base = score_token(**_clean_kwargs())
+    r = score_token(**_clean_kwargs(), privileges=ContractPrivileges(analyzed=False))
+    assert not any(s.category == "privileges" for s in r.signals)
+    assert r.risk_score == base.risk_score
+    assert r.confidence == base.confidence
 
 
 def _cluster(pct: float) -> HolderCluster:

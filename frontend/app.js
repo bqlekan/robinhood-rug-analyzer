@@ -176,6 +176,24 @@ function shortAddr(addr) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+// M11 contract-privilege helpers. Renounced (owner==zero) is the only reassuring state;
+// retained or unconfirmed ownership keeps the powers dangerous.
+function privilegeOwnership(p) {
+  if (!p || !p.analyzed) return "UNKNOWN";
+  if (p.ownership_renounced === true) return "RENOUNCED";
+  if (p.ownership_renounced === false) return "OWNER RETAINED";
+  return "UNCONFIRMED";
+}
+
+function privilegePowers(p) {
+  const powers = [];
+  if (p.can_mint) powers.push("mint");
+  if (p.can_pause) powers.push(p.is_paused ? "paused NOW" : "pause");
+  if (p.can_blacklist) powers.push("blacklist");
+  if (p.can_set_fees) powers.push("fees");
+  return powers.length ? powers.join(" · ") : "no dangerous powers";
+}
+
 function renderLore(lore) {
   if (!lore) return "";
   const sources = lore.sources
@@ -295,6 +313,11 @@ function renderAnalysis(data) {
         "Compiler",
         esc(data.contract_intel?.compiler || "N/A"),
         esc(data.contract_intel?.language || ""),
+      )}
+      ${card(
+        "Ownership",
+        esc(privilegeOwnership(data.contract_privileges)),
+        data.contract_privileges?.analyzed ? esc(privilegePowers(data.contract_privileges)) : "unverified / no ABI",
       )}
     </section>
 

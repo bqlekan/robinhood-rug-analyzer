@@ -8,6 +8,7 @@ The final score is the capped sum, so each contribution stays auditable in the U
 
 from app.models.token import (
     ClusterAnalysis,
+    ContractPrivileges,
     DevProfile,
     HolderDistribution,
     HoneypotResult,
@@ -85,6 +86,7 @@ def score_token(
     lore: TokenLore | None,
     data_sources: list[str],
     honeypot: HoneypotResult | None = None,
+    privileges: ContractPrivileges | None = None,
 ) -> RugAnalysis:
     signals: list[RiskSignal] = []
 
@@ -179,6 +181,32 @@ def score_token(
             tax = honeypot.sell_tax_percentage
             _sig(signals, "Extreme sell tax", "honeypot", "high", 20,
                  honeypot.detail or f"Simulated sell incurs a ~{tax}% tax, well above normal.")
+
+    # --- Contract privileges / authority (M11) ---
+    # Retained-power signals fire only when ownership is NOT confirmed-renounced: a
+    # confirmed renounce (owner == zero) neutralizes onlyOwner powers and silences them.
+    # Retained (False) OR unknown (None) ownership keeps them flagged — never a false clean.
+    # Like honeypot, this is an additive bonus detector: not folded into confidence, and
+    # analyzed=False (unverified/no ABI) scores nothing rather than a false "no powers".
+    if privileges and privileges.analyzed:
+        if privileges.is_paused:
+            _sig(signals, "Trading currently paused", "privileges", "critical", 30,
+                 "Contract's paused() reads true right now; transfers/trading are frozen.")
+        if privileges.ownership_renounced is not True:
+            retained = privileges.ownership_renounced is False  # False=owner known, None=unconfirmed
+            note = "Owner retained" if retained else "Ownership unconfirmed"
+            if privileges.can_mint:
+                _sig(signals, "Mintable supply", "privileges", "high", 18,
+                     f"{note}; contract exposes a mint function — supply can be inflated / diluted.")
+            if privileges.can_blacklist:
+                _sig(signals, "Blacklist/denylist power", "privileges", "high", 18,
+                     f"{note}; contract can blacklist wallets — a common way to block sellers.")
+            if privileges.can_pause:
+                _sig(signals, "Pausable transfers", "privileges", "high", 15,
+                     f"{note}; contract can pause transfers — trading can be frozen at will.")
+            if privileges.can_set_fees:
+                _sig(signals, "Mutable fees/tax", "privileges", "medium", 10,
+                     f"{note}; contract can change fees/tax — sell tax can be raised after buys.")
 
     # --- Lore sentiment ---
     if lore and lore.sentiment == "negative":

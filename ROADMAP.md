@@ -414,8 +414,16 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M11 — Contract-privilege / authority reads
+### M11 — Contract-privilege / authority reads ✅ COMPLETE
 
+- **Status:** ✅ **COMPLETE** (2026-07-19). New `contract_privileges.py`: pure ABI-power
+  detection (mint/pause/blacklist/fee mutators) + live `owner()`/`getOwner()`/`paused()`
+  `eth_call` reads via the M10 RPC client. The verified `/smart-contracts` payload is now
+  fetched once and shared with `contract_intel` (no extra Blockscout request). A confirmed
+  renounce (owner == zero) is the only thing that silences retained-power signals; retained
+  OR unconfirmed ownership keeps them flagged, and unverified/no-ABI degrades to
+  `analyzed=False` (never a false clean). Additive bonus detector — not folded into
+  confidence, mirroring the honeypot discipline. 379 tests pass.
 - **Goal:** Read live contract powers: ownership renounced? mintable? pausable? blacklist?
   mutable fees? Combine ABI (already fetched) with `eth_call` for live owner/paused state.
 - **Why it matters:** `contract_intel` currently sees *which library* was imported, not *what

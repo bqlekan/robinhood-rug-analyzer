@@ -207,6 +207,23 @@ class ContractIntel(BaseModel):
     detail: str | None = None
 
 
+# --- Contract privileges / authority (live reads, M11) ---
+
+
+class ContractPrivileges(BaseModel):
+    # False when unverified or no ABI: "couldn't see", NOT "no powers".
+    analyzed: bool = False
+    owner_address: str | None = None
+    # True = renounced (owner is zero), False = owner retained, None = couldn't confirm.
+    ownership_renounced: bool | None = None
+    can_mint: bool = False
+    can_pause: bool = False
+    is_paused: bool | None = None  # live paused() read; None if not exposed/unreadable
+    can_blacklist: bool = False
+    can_set_fees: bool = False
+    detail: str | None = None
+
+
 # --- Lore ---
 
 
@@ -280,7 +297,7 @@ class WatchlistHit(BaseModel):
 
 class RiskSignal(BaseModel):
     name: str
-    category: str  # age | holders | clusters | dev | liquidity | launchpad | market | lore
+    category: str  # age | holders | clusters | dev | liquidity | launchpad | market | honeypot | privileges | lore
     severity: str  # low | medium | high | critical
     points: int
     description: str
@@ -313,6 +330,7 @@ class TokenAnalysisResponse(BaseModel):
     launchpad: LaunchpadInfo | None = None
     honeypot: HoneypotResult | None = None
     contract_intel: ContractIntel | None = None
+    contract_privileges: ContractPrivileges | None = None
     lore: TokenLore | None = None
     insiders: list[InsiderWallet] = Field(default_factory=list)
     watchlist_hits: list[WatchlistHit] = Field(default_factory=list)

@@ -62,7 +62,7 @@ It has two broad halves that share infrastructure but run independently:
 |---|---|---|
 | **Data Collection** | `blockscout_client`, `dexscreener_client`, `rpc_client`, `lore_client` | Fetch token metadata, holders, transfers, market pairs, contract source, chain state (`eth_call`), and public web lore. All degrade to `None`/`[]`. |
 | **Social Intelligence** | `social/` package | Platform-neutral provider abstraction; X scraping via persistent Playwright session; snapshot diffing. |
-| **Contract Analysis** | `contract_intel`, `analyzers` | Verified-source template/protocol inference; pure per-dimension analysis (age, holders, clusters, dev, LP lock, launchpad). |
+| **Contract Analysis** | `contract_intel`, `contract_privileges`, `analyzers` | Verified-source template/protocol inference; live privilege/authority reads (owner/paused, mint/pause/blacklist/fee powers); pure per-dimension analysis (age, holders, clusters, dev, LP lock, launchpad). |
 | **Honeypot Simulation** | `honeypot_sim`, `route_discovery`, `core/honeypot_artifact` | Simulated buy→sell round-trip via `eth_call` state override; off-chain route discovery. Inert unless a DEX router is mapped. |
 | **Route Discovery** | `route_discovery` | Liquidity-verified Uniswap v3 path (direct or WETH→quote→token) for the honeypot prober. |
 | **Wallet Intelligence** | `wallet_intel`, `watchlist_store` | Insider detection + heuristic smart-wallet proxy; persistent wallet watchlist. |
@@ -206,6 +206,18 @@ frontend; owns the lifespan-scoped background scheduler.
 - Dependencies: `blockscout_client.get_smart_contract`.
 - Extension: append tuples to `TEMPLATE_SIGNATURES` / `PROTOCOL_SIGNATURES` (first match wins).
 - Failure modes: unverified/missing source -> `template="unknown"`, `verified=False`; never raises.
+
+**`app/services/contract_privileges.py`** — live authority/privilege reads (M11).
+- Public: `fetch_privileges(address, payload) -> ContractPrivileges` (fires ≤2 `eth_call`s); `infer_privileges(payload, owner_hex, paused_hex)` (pure).
+- Dependencies: shares `blockscout_client.get_smart_contract`'s payload (no extra fetch); `rpc_client.eth_call` for live `owner()`/`paused()`.
+- Detects mint/pause/blacklist/fee-mutation powers from the verified ABI; a confirmed renounce (owner == zero) silences the retained-power signals.
+- Failure modes: unverified/no ABI -> `analyzed=False` (never a false "no powers"); unknown ownership keeps powers flagged; RPC errors -> `None`, never raises.
+
+**`app/services/contract_privileges.py`** — live authority/privilege reads (M11).
+- Public: `fetch_privileges(address, payload) -> ContractPrivileges` (reuses the shared `get_smart_contract` payload, no extra request); `infer_privileges(payload, owner_hex, paused_hex)` (pure).
+- Dependencies: `rpc_client.eth_call` for live `owner()`/`getOwner()`/`paused()`; ABI from the passed contract payload.
+- Detects: mint/pause/blacklist/fee-mutation powers (ABI); ownership renounced vs retained vs unconfirmed; live `paused()` state.
+- Failure modes: unverified/no-ABI -> `analyzed=False` (never a false "no powers"); any RPC failure -> `None`; only a confirmed renounce silences the retained-power signals.
 
 **`app/services/launchpad_registry.py`** — on-chain-marker registry (pure).
 - Public: `detect_launchpad(creator, contract_name, tags)`, `match_creation_evidence(factory_to, log_topics)`, `has_enabled_launchpads()`, `is_established_token(symbol, name)`, `locker_label(address)`, `is_burn_address(address)`, `normalize(...)`.
@@ -601,7 +613,7 @@ router is mapped, and the launchpad registries are empty by design.
 ### 9.1 `analyze_token_contract` — composition order
 
 1. **Validate** the address (`ValueError` if invalid).
-2. **Parallel fetch batch** (`asyncio.gather`): DexScreener pairs, token info, address info, token holders (`holder_sample_size`), contract intel.
+2. **Parallel fetch batch** (`asyncio.gather`): DexScreener pairs, token info, address info, token holders (`holder_sample_size`), verified contract payload (shared by contract intel + privileges).
 3. **Market data** — `choose_best_pair` → `_build_market_data`; seed `data_sources`.
 4. **Age** — prefer DexScreener `pairCreatedAt`; else fetch contract-creation tx timestamp; then `analyze_age`.
 5. **Holders/distribution** — `analyze_holders` with the LP pair address excluded.
@@ -613,8 +625,9 @@ router is mapped, and the launchpad registries are empty by design.
 11. **Launchpad** — **gated** on `has_enabled_launchpads()`; only then fetch creation evidence (RPC-first, Blockscout fallback) → `analyze_launchpad`.
 12. **Lore** — only if `include_lore` → `build_lore`.
 13. **Honeypot** — `honeypot_sim.simulate` reusing the market pair (inert unless a router is mapped).
-14. **Score** — `score_token(...)` over all dimensions.
-15. **Return** `TokenAnalysisResponse`.
+14. **Privileges** — `contract_privileges.fetch_privileges` reusing the fetched contract payload (≤2 `eth_call`s for owner/paused; inert on unverified/no-ABI).
+15. **Score** — `score_token(...)` over all dimensions.
+16. **Return** `TokenAnalysisResponse`.
 
 ### 9.2 `scan_and_rank` and scan tiering
 
@@ -888,6 +901,8 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M8 — Registry population | Done | `launchpad_registry` structure (kept empty in prod by design) |
 | M9 — RPC layer | Partial | `rpc_client` (`eth_call` + state override) — the behavior-analysis foundation |
 | M10 — Honeypot / sell-tax simulation | Done | `honeypot_sim` + `route_discovery` + `core/honeypot_artifact` |
+| M11 — Contract-privilege / authority reads | Done | `contract_privileges` (ABI power detection + live `owner()`/`paused()` reads) + privilege signals in `scoring` |
+| M11 — Contract-privilege / authority reads | Done | `contract_privileges` (ABI powers + live `owner()`/`paused()` reads) + `privileges` signals in `scoring` |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |
