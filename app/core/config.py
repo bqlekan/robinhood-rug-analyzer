@@ -132,6 +132,15 @@ class Settings(BaseSettings):
     # wallets, so requiring a floor keeps "survived" meaning "still a live token".
     smart_wallet_survival_min_holders: int = 50
 
+    # --- Persistent deployer reputation (M18) ---
+    # A deployer's launch history is recomputed live on every analyze by _scan_creator_launches
+    # (bounded, but pays the request cost each time). Once persisted, a known deployer's history
+    # is reused within this TTL so the live scan is skipped on a cache hit. Outcomes change over
+    # time (an alive token can rug later), so the cache expires and refreshes after the TTL —
+    # a deployer's status can only worsen, never get frozen good. 0 disables the cache (always
+    # scans live), reverting to pre-M18 behaviour.
+    deployer_reputation_ttl_hours: float = 24.0
+
     # --- Persistent wallet reputation (M17) ---
     # A watchlisted wallet appearing on this token is scored as reputation risk only once
     # it has been seen on at least this many OTHER tokens (prior-token history). A floor

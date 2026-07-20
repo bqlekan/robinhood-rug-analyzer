@@ -629,7 +629,18 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M18 — Persistent deployer reputation
+### M18 — Persistent deployer reputation ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-19). New `deployers` table in `watchlist_store`
+  (`upsert_deployer`/`get_deployer`) persists a deployer's classified launch history
+  (reputation + counts + serialized `LaunchedToken` list). `_scan_creator_launches` now
+  returns `(launched_tokens, from_cache)`: a fresh cache hit (within
+  `deployer_reputation_ttl_hours`, default 24) rebuilds the launch history from the store and
+  **skips the live creator scan entirely** (the expensive creator-tx scan + per-launch
+  info/pairs fetch); a miss/stale entry runs the live scan and the caller persists the
+  result. Reputation classification is unchanged — `analyze_dev` stays the single source of
+  truth; the store only caches its input/output. Only non-empty, freshly-scanned results are
+  cached (an empty scan is ambiguous, so it self-heals next analyze). 441 tests pass.
 
 **Goal:** Persist deployer → launches → outcomes instead of recomputing live every analyze.
 

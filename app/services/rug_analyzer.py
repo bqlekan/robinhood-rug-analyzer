@@ -5,6 +5,7 @@ import logging
 
 from app.core.config import settings
 from app.models.token import (
+    LaunchedToken,
     LiquiditySnapshot,
     PriceChangeSnapshot,
     RankedToken,
@@ -146,21 +147,34 @@ async def _trace_funders(holder_addresses: list[str]) -> tuple[dict[str, str | N
     return immediate, chains
 
 
-async def _scan_creator_launches(creator: str | None, this_token: str) -> list:
+async def _scan_creator_launches(creator: str | None, this_token: str) -> tuple[list, bool]:
     """Find other tokens this deployer created and classify each as alive/rugged.
+
+    M18: returns `(launched_tokens, from_cache)`. A fresh deployer reputation persisted
+    within `deployer_reputation_ttl_hours` is reused as-is — the live per-token scan is
+    skipped entirely (the expensive part: a creator-tx scan + a token-info/pairs fetch per
+    launch). On a miss/stale entry, the live scan runs; the caller persists the result.
 
     Bounded and best-effort: reads a couple of pages of the creator's transactions,
     picks contract-creation txs, and prices each created token's liquidity via DexScreener.
     """
     if not creator:
-        return []
+        return [], False
+
+    # M18: cache hit -> rebuild the launch history from the store, no live scan.
+    cached = watchlist_store.get_deployer(
+        creator, max_age_seconds=settings.deployer_reputation_ttl_hours * 3600
+    )
+    if cached and cached.get("launched_tokens"):
+        return [LaunchedToken(**t) for t in cached["launched_tokens"]], True
+
     try:
         txs = await blockscout_client.get_address_transactions_paged(
             creator, pages=settings.transfer_scan_pages
         )
     except Exception as exc:
         logger.warning("Creator scan failed for %s: %s", creator, exc)
-        return []
+        return [], False
 
     created_addresses: list[str] = []
     for tx in txs:
@@ -190,7 +204,7 @@ async def _scan_creator_launches(creator: str | None, this_token: str) -> list:
 
     results = await asyncio.gather(*(classify(a) for a in unique), return_exceptions=True)
     created = [r for r in results if isinstance(r, dict)]
-    return analyzers.classify_created_tokens(created)
+    return analyzers.classify_created_tokens(created), False
 
 
 def _watchlist_hits(holder_addresses: list[str], this_token: str | None = None) -> list[WatchlistHit]:
@@ -342,7 +356,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     supply_units = analyzers._supply_units(total_supply, decimals)
     dev_holding = _dev_holding_pct(creator, holder_distribution)
     dev_transfers, dev_moved_pct = analyzers.analyze_dev_transfers(transfers, creator, supply_units)
-    launched_tokens = await _scan_creator_launches(creator, normalized)
+    launched_tokens, dev_from_cache = await _scan_creator_launches(creator, normalized)
     dev = analyzers.analyze_dev(
         creator,
         creation_tx,
@@ -351,6 +365,19 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         dev_transfers=dev_transfers,
         transferred_out_percentage=dev_moved_pct or None,
     )
+    # M18: persist a freshly-scanned deployer with real launch history so a serial
+    # rugger stays flagged cheaply and the next analyze skips the live scan within TTL.
+    # Only persist non-cache, non-empty results: an empty scan is ambiguous (no launches
+    # vs. a transient fetch failure), so caching it would freeze a transient failure.
+    if creator and not dev_from_cache and launched_tokens:
+        watchlist_store.upsert_deployer(
+            creator,
+            reputation=dev.reputation or "unknown",
+            tokens_launched=dev.tokens_launched,
+            tokens_rugged=dev.tokens_rugged,
+            tokens_alive=dev.tokens_alive,
+            launched_tokens=[t.model_dump() for t in launched_tokens],
+        )
 
     # Wallet intelligence: insiders + smart-wallet proxies (persists to watchlist).
     # Known contracts (LP pair + any sampled holder flagged is_contract) are excluded

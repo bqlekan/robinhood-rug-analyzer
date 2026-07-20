@@ -63,6 +63,24 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # M18: persisted deployer reputation. `launched_tokens` is the serialized list of
+    # classified LaunchedTokens (the expensive scan output); reputation/counts are cached
+    # alongside so a known serial rugger is retrievable without a live re-scan. `refreshed_at`
+    # drives TTL expiry so stale outcomes are re-scanned and a status can worsen over time.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS deployers (
+            address TEXT PRIMARY KEY,
+            reputation TEXT,
+            tokens_launched INTEGER,
+            tokens_rugged INTEGER,
+            tokens_alive INTEGER,
+            launched_tokens TEXT,
+            first_seen TEXT,
+            last_refreshed TEXT
+        )
+        """
+    )
     conn.commit()
     _CONN = conn
     return conn
@@ -231,6 +249,84 @@ def prior_token_counts(addresses: list[str], exclude_token: str | None = None) -
     except Exception as exc:  # store is a cache, never break analysis
         logger.warning("prior_token_counts failed: %s", exc)
         return {}
+
+
+# --- Deployer reputation (M18) ---
+
+
+def get_deployer(address: str, max_age_seconds: float | None = None) -> dict | None:
+    """Return a cached deployer record, or None if absent/stale (M18).
+
+    Record: {reputation, tokens_launched, tokens_rugged, tokens_alive, launched_tokens,
+    last_refreshed}. `launched_tokens` is the deserialized list of LaunchedToken dicts, so
+    a cache hit rebuilds the full DevProfile launch history without a live creator scan.
+    A record older than `max_age_seconds` is treated as a miss so outcomes can worsen over
+    time. Defensive: empty/missing DB or any error -> None (caller falls back to live scan).
+    """
+    if not address:
+        return None
+    address = address.lower()
+    try:
+        with _LOCK:
+            conn = _connect()
+            r = conn.execute("SELECT * FROM deployers WHERE address = ?", (address,)).fetchone()
+        if not r:
+            return None
+        if max_age_seconds is not None and r["last_refreshed"]:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(r["last_refreshed"])).total_seconds()
+            if age > max_age_seconds:
+                return None  # stale -> force a refresh
+        return {
+            "reputation": r["reputation"],
+            "tokens_launched": r["tokens_launched"],
+            "tokens_rugged": r["tokens_rugged"],
+            "tokens_alive": r["tokens_alive"],
+            "launched_tokens": json.loads(r["launched_tokens"] or "[]"),
+            "last_refreshed": r["last_refreshed"],
+        }
+    except Exception as exc:  # cache, never break analysis
+        logger.warning("get_deployer failed for %s: %s", address, exc)
+        return None
+
+
+def upsert_deployer(
+    address: str,
+    *,
+    reputation: str,
+    tokens_launched: int | None,
+    tokens_rugged: int | None,
+    tokens_alive: int | None,
+    launched_tokens: list[dict],
+) -> None:
+    """Persist a deployer's launch history + classification (M18). Best-effort."""
+    if not address:
+        return
+    address = address.lower()
+    now = _now()
+    try:
+        with _LOCK:
+            conn = _connect()
+            existing = conn.execute("SELECT first_seen FROM deployers WHERE address = ?", (address,)).fetchone()
+            first_seen = existing["first_seen"] if existing else now
+            conn.execute(
+                """
+                INSERT INTO deployers (address, reputation, tokens_launched, tokens_rugged,
+                    tokens_alive, launched_tokens, first_seen, last_refreshed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(address) DO UPDATE SET
+                    reputation=excluded.reputation,
+                    tokens_launched=excluded.tokens_launched,
+                    tokens_rugged=excluded.tokens_rugged,
+                    tokens_alive=excluded.tokens_alive,
+                    launched_tokens=excluded.launched_tokens,
+                    last_refreshed=excluded.last_refreshed
+                """,
+                (address, reputation, tokens_launched, tokens_rugged, tokens_alive,
+                 json.dumps(launched_tokens or []), first_seen, now),
+            )
+            conn.commit()
+    except Exception as exc:  # cache write must never break analysis
+        logger.warning("upsert_deployer failed for %s: %s", address, exc)
 
 
 def refresh_addresses(limit: int) -> list[str]:
