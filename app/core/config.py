@@ -141,6 +141,22 @@ class Settings(BaseSettings):
     # scans live), reverting to pre-M18 behaviour.
     deployer_reputation_ttl_hours: float = 24.0
 
+    # --- Historical scan snapshots & trend detection (M19) ---
+    # Every analyze persists a compact snapshot (score + key metrics + timestamp). On the
+    # next analyze, the prior snapshot is diffed to surface slow-rug trends a single point-in-
+    # time score misses. Master switch; disabling reverts to no persistence / no trend signal.
+    snapshot_enabled: bool = True
+    # Separate sqlite DB from the wallet watchlist so snapshot growth stays decoupled.
+    snapshot_db_path: str = "data/snapshots.db"
+    # Rows kept per token (newest-first); bounds DB growth. Older rows are pruned each write.
+    snapshot_history_retain: int = 50
+    # A liquidity DROP of at least this percent vs. the prior snapshot raises a trend signal
+    # ("liquidity bleeding out" — a slow rug). Only drops score; a rise is reassuring, not risk.
+    snapshot_liquidity_drop_pct: float = 40.0
+    # A rise in top-10 holder concentration of at least this many percentage POINTS vs. the
+    # prior snapshot raises a trend signal (dev/insider quietly accumulating).
+    snapshot_concentration_rise_pct: float = 15.0
+
     # --- Persistent wallet reputation (M17) ---
     # A watchlisted wallet appearing on this token is scored as reputation risk only once
     # it has been seen on at least this many OTHER tokens (prior-token history). A floor

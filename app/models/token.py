@@ -210,6 +210,27 @@ class LiquidityLock(BaseModel):
     detail: str | None = None
 
 
+# --- Historical trend (M19) ---
+
+
+class TokenTrend(BaseModel):
+    """Time-series deltas vs. the prior stored snapshot (M19). Additive metadata.
+
+    A single snapshot can't see a *slow rug* — liquidity bleeding out over days or the
+    dev quietly accumulating. `has_prior` is False on a token's first-ever analyze (no
+    baseline yet), in which case no deltas are computed and nothing scores. Percentages
+    are signed: liquidity_change_pct < 0 is a drop; concentration_change_pct > 0 is a rise.
+    """
+    has_prior: bool = False
+    prior_captured_at: str | None = None
+    liquidity_change_pct: float | None = None
+    concentration_change_pct: float | None = None  # top-10 %-point change
+    holder_count_change: int | None = None
+    risk_score_change: int | None = None
+    signals: list[str] = Field(default_factory=list)
+    detail: str | None = None
+
+
 # --- Launchpad ---
 
 
@@ -379,6 +400,7 @@ class TokenAnalysisResponse(BaseModel):
     lore: TokenLore | None = None
     insiders: list[InsiderWallet] = Field(default_factory=list)
     watchlist_hits: list[WatchlistHit] = Field(default_factory=list)
+    trend: TokenTrend | None = None
     analysis: RugAnalysis
 
 

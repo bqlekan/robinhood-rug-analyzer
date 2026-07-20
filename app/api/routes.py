@@ -9,7 +9,7 @@ from app.models.token import (
     WatchlistEntry,
     WatchlistResponse,
 )
-from app.services import watchlist_store
+from app.services import snapshot_store, watchlist_store
 from app.services.rug_analyzer import analyze_token_contract, scan_and_rank
 
 router = APIRouter(prefix="/api/v1", tags=["tokens"])
@@ -60,3 +60,12 @@ async def get_wallet(address: str) -> WatchlistEntry:
     if not entry:
         raise HTTPException(status_code=404, detail="Wallet not found in watchlist.")
     return entry
+
+
+@router.get("/history/{address}")
+async def get_token_history(address: str, limit: int = 50) -> dict:
+    """Stored analysis snapshots for a token, newest first (M19 trend history)."""
+    return {
+        "contract_address": address,
+        "snapshots": snapshot_store.list_snapshots(address, limit=limit),
+    }

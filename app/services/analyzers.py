@@ -23,6 +23,7 @@ from app.models.token import (
     LaunchedToken,
     LiquidityLock,
     TokenAge,
+    TokenTrend,
 )
 from app.services import launchpad_registry
 
@@ -461,6 +462,74 @@ def analyze_buy_timing(
         same_block_number=same_block_number,
         first_window_wallets=first_window_wallets,
         coordinated=coordinated,
+        detail=detail,
+    )
+
+
+def analyze_trend(
+    prior: dict | None,
+    *,
+    current_liquidity_usd: float | None,
+    current_top10_percentage: float | None,
+    current_holder_count: int | None,
+    current_risk_score: int | None = None,
+    liquidity_drop_pct: float | None = None,
+    concentration_rise_pct: float | None = None,
+) -> TokenTrend:
+    """Diff the current analysis against the prior stored snapshot (M19). Pure.
+
+    A single snapshot can't see a *slow rug* — liquidity draining over days or the dev
+    quietly accumulating supply. This compares the current metrics to `prior` (the last
+    stored snapshot, or None on a token's first-ever analyze) and flags a downward
+    liquidity trend and/or a rising-concentration trend when the delta crosses a threshold.
+
+    First sighting (`prior is None`) -> `has_prior=False`, no deltas, no signals, no raise.
+    Only adverse moves raise a signal: a liquidity DROP and a concentration RISE. A liquidity
+    recovery or a de-concentration is reassuring, not risk, so it never scores.
+    """
+    if not prior:
+        return TokenTrend(has_prior=False, detail="No prior snapshot; first analysis of this token.")
+
+    drop_threshold = settings.snapshot_liquidity_drop_pct if liquidity_drop_pct is None else liquidity_drop_pct
+    rise_threshold = settings.snapshot_concentration_rise_pct if concentration_rise_pct is None else concentration_rise_pct
+
+    signals: list[str] = []
+
+    # Liquidity change % (signed; negative = drop).
+    liq_change: float | None = None
+    prior_liq = prior.get("liquidity_usd")
+    if prior_liq is not None and prior_liq > 0 and current_liquidity_usd is not None:
+        liq_change = round((current_liquidity_usd - prior_liq) / prior_liq * 100, 2)
+        if liq_change <= -drop_threshold:
+            signals.append(f"Liquidity fell {abs(liq_change)}% since the previous snapshot")
+
+    # Top-10 concentration change in percentage POINTS (signed; positive = rising).
+    conc_change: float | None = None
+    prior_top10 = prior.get("top10_percentage")
+    if prior_top10 is not None and current_top10_percentage is not None:
+        conc_change = round(current_top10_percentage - prior_top10, 2)
+        if conc_change >= rise_threshold:
+            signals.append(f"Top-10 holder concentration rose {conc_change} points since the previous snapshot")
+
+    holder_change: int | None = None
+    prior_holders = prior.get("holder_count")
+    if prior_holders is not None and current_holder_count is not None:
+        holder_change = current_holder_count - prior_holders
+
+    risk_change: int | None = None
+    prior_risk = prior.get("risk_score")
+    if prior_risk is not None and current_risk_score is not None:
+        risk_change = current_risk_score - prior_risk
+
+    detail = "; ".join(signals) if signals else "No adverse liquidity or concentration trend vs. the previous snapshot."
+    return TokenTrend(
+        has_prior=True,
+        prior_captured_at=prior.get("captured_at"),
+        liquidity_change_pct=liq_change,
+        concentration_change_pct=conc_change,
+        holder_count_change=holder_change,
+        risk_score_change=risk_change,
+        signals=signals,
         detail=detail,
     )
 

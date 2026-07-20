@@ -620,8 +620,10 @@ router is mapped, and the launchpad registries are empty by design.
 12. **Lore** — only if `include_lore` → `build_lore`.
 13. **Honeypot** — `honeypot_sim.simulate` reusing the market pair (inert unless a router is mapped).
 14. **Privileges** — `contract_privileges.fetch_privileges` reusing the fetched contract payload (≤2 `eth_call`s for owner/paused; inert on unverified/no-ABI).
-15. **Score** — `score_token(...)` over all dimensions.
-16. **Return** `TokenAnalysisResponse`.
+15. **Trend (M19)** — read the prior snapshot (`snapshot_store.latest_snapshot`) and `analyze_trend` diffs liquidity / top-10 / holder-count deltas (no extra fetch; first analyze has no prior → no trend).
+16. **Score** — `score_token(...)` over all dimensions (incl. the trend slow-rug signal).
+17. **Snapshot (M19)** — after scoring, `snapshot_store.record_snapshot` persists score + metrics, pruned to `snapshot_history_retain`.
+18. **Return** `TokenAnalysisResponse`.
 
 ### 9.2 `scan_and_rank` and scan tiering
 
@@ -903,6 +905,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M16 — Smart-wallet cross-token activation | Done | `get_address_token_holdings` + `_count_surviving_tokens` (bounded by `smart_wallet_survival_candidates`) feed `surviving_tokens` into `smart_wallet_proxy`, so the smart list can clear its threshold; frontend empty-state reverted to a genuine "none found" |
 | M17 — Persistent wallet reputation | Done | `watchlist_store.prior_token_counts` reads distinct prior tokens from the persisted `wallet_activity` memory; `_watchlist_hits` enriches each hit with `prior_tokens`; `scoring` adds a reputation signal (insider/smart) gated by `wallet_reputation_min_prior_tokens` so first sightings don't score |
 | M18 — Persistent deployer reputation | Done | `watchlist_store` `deployers` table (`get_deployer`/`upsert_deployer`, TTL-aware); `_scan_creator_launches` reuses a fresh cached launch history and skips the live creator scan within `deployer_reputation_ttl_hours`; a freshly-scanned deployer with real launches is persisted, feeding the existing `analyze_dev` serial-rugger/mixed signals |
+| M19 — Historical snapshots & trend detection | Done | new `snapshot_store` (append/prune/latest, `snapshot_history_retain`); `analyze_trend` diffs the prior snapshot (liquidity drop / concentration rise) into a `TokenTrend`; `scoring` adds slow-rug signals; `GET /token/{addr}/history` endpoint; snapshot written each analyze after scoring |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |

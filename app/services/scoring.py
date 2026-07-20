@@ -22,6 +22,7 @@ from app.models.token import (
     TokenAge,
     TokenLore,
     TokenMarketData,
+    TokenTrend,
     WatchlistHit,
 )
 
@@ -94,6 +95,7 @@ def score_token(
     bundle: BundleAnalysis | None = None,
     buy_timing: BuyTimingAnalysis | None = None,
     watchlist_hits: list[WatchlistHit] | None = None,
+    trend: TokenTrend | None = None,
 ) -> RugAnalysis:
     signals: list[RiskSignal] = []
 
@@ -187,6 +189,18 @@ def score_token(
             _sig(signals, "Recurring smart wallets present", "clusters", "low", 4,
                  f"{len(smart_rep)} recurring smart wallet(s) hold this token (up to {top} prior tokens). "
                  "Informational: estimated from free on-chain behavior, not verified ROI.")
+
+    # --- Historical trend / slow rug (M19) ---
+    # Compares this analyze to the prior stored snapshot. A single point-in-time score
+    # can't see liquidity bleeding out over days or the dev quietly accumulating; a threshold
+    # delta surfaces it. No prior snapshot (first analyze) -> trend.has_prior is False, no signal.
+    if trend and trend.has_prior:
+        if trend.liquidity_change_pct is not None and trend.liquidity_change_pct <= -settings.snapshot_liquidity_drop_pct:
+            _sig(signals, "Liquidity trending down", "liquidity", "high", 18,
+                 f"Liquidity fell {abs(trend.liquidity_change_pct)}% since the previous snapshot; possible slow rug.")
+        if trend.concentration_change_pct is not None and trend.concentration_change_pct >= settings.snapshot_concentration_rise_pct:
+            _sig(signals, "Concentration trending up", "holders", "medium", 12,
+                 f"Top-10 holder concentration rose {trend.concentration_change_pct} points since the previous snapshot; wallets accumulating.")
 
     # --- Dev ---
     if dev:

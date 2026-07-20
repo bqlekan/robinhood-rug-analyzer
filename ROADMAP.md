@@ -665,7 +665,18 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M19 — Historical scan snapshots + trend detection
+### M19 — Historical scan snapshots + trend detection ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-19). New `snapshot_store.py` (same sqlite discipline as
+  `watchlist_store`) persists one compact row per analyze (risk_score + liquidity + top-10 % +
+  holder count + timestamp), pruned to `snapshot_history_retain` (default 50) per token. Pure
+  `analyzers.analyze_trend` diffs the prior snapshot against the current metrics — all already
+  computed in-pipeline, no extra fetch — and flags a liquidity DROP (≥ `snapshot_liquidity_drop_pct`,
+  default 40%) or top-10 concentration RISE (≥ `snapshot_concentration_rise_pct` points, default 15).
+  `scoring` turns those into slow-rug signals (liquidity high/18, concentration medium/12). First-ever
+  analyze has no prior → `has_prior=False`, no deltas, no signal. Trend is read before scoring (feeds
+  the score) and the new snapshot is written after (captures the final risk_score). Added
+  `GET /api/v1/token/{address}/history`. 454 tests pass.
 
 **Goal:** Persist each analysis (score, signals, key metrics, timestamp) and derive time-series signals ("liquidity dropped 60% since yesterday," "top-holder concentration rising").
 

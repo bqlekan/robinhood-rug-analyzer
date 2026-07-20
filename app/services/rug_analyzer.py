@@ -17,7 +17,7 @@ from app.models.token import (
 )
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
-from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, honeypot_sim, launchpad_registry, rpc_client, wallet_intel, watchlist_store
+from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, honeypot_sim, launchpad_registry, rpc_client, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -471,6 +471,21 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     # false clean); a confirmed renounce is what silences the retained-power signals.
     privileges = await contract_privileges.fetch_privileges(normalized, contract_payload)
 
+    # M19: read the prior snapshot and diff it BEFORE scoring, so a slow-rug trend
+    # (liquidity draining, concentration rising) can feed a risk signal. The metrics it
+    # diffs (liquidity, top-10 %, holder count) are all already computed above — no extra
+    # fetch. First-ever analyze has no prior -> has_prior=False, no trend signal.
+    trend = None
+    if settings.snapshot_enabled:
+        cur_liq = market_data.liquidity.usd if market_data and market_data.liquidity else None
+        prior_snapshot = snapshot_store.latest_snapshot(normalized)
+        trend = analyzers.analyze_trend(
+            prior_snapshot,
+            current_liquidity_usd=cur_liq,
+            current_top10_percentage=holder_distribution.top10_percentage,
+            current_holder_count=holder_distribution.holder_count,
+        )
+
     analysis = score_token(
         age=age,
         market=market_data,
@@ -486,7 +501,20 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         bundle=bundle,
         buy_timing=buy_timing,
         watchlist_hits=watchlist_hits,
+        trend=trend,
     )
+
+    # M19: persist this analysis as the new snapshot (after scoring, so the final
+    # risk_score is captured). Bounded by snapshot_history_retain. Best-effort.
+    if settings.snapshot_enabled:
+        cur_liq = market_data.liquidity.usd if market_data and market_data.liquidity else None
+        snapshot_store.record_snapshot(
+            normalized,
+            risk_score=analysis.risk_score,
+            liquidity_usd=cur_liq,
+            top10_percentage=holder_distribution.top10_percentage,
+            holder_count=holder_distribution.holder_count,
+        )
 
     return TokenAnalysisResponse(
         contract_address=normalized,
@@ -509,6 +537,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         contract_privileges=privileges,
         bundle=bundle,
         buy_timing=buy_timing,
+        trend=trend,
     )
 
 
