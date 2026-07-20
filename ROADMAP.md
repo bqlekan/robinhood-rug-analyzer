@@ -701,7 +701,18 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M20 — Technical-debt cleanup
+### M20 — Technical-debt cleanup ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-19). Two live items removed: the unused
+  `ETHERSCAN_API_KEY`/`BSCSCAN_API_KEY`/`POLYGONSCAN_API_KEY` env keys (from `render.yaml` +
+  `.env.example`; never read in code) and the redundant `lp_addr` reassignment in
+  `rug_analyzer.py` (already set once from `best_pair.get("pairAddress")`; the in-guard copy
+  was identical). The other four listed items were **already satisfied** by later milestones
+  and only needed verification, not rewriting: `_member_key` was removed in M5 (no matches);
+  the `contract_created_iso = None` block is now **live M3 fallback code**, not dead; `data/`
+  is already in `.gitignore`; and `rpc_url` is now **actively consumed** by M9/M10, so the
+  proposed "currently inert" comment would be false and was intentionally not added. 454 tests
+  pass; a grep confirms the removed symbols/keys are gone.
 
 **Goal:** Remove leftovers from the deleted multi-chain design and dead code confirmed in the tree.
 

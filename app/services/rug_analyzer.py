@@ -403,7 +403,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     # Liquidity lock: inspect LP token holders of the pair.
     liquidity_lock = None
     if best_pair and best_pair.get("pairAddress"):
-        lp_addr = best_pair["pairAddress"]
+        # lp_addr was already resolved above (holders/known-contracts use it); reuse it.
         lp_info, lp_holders = await asyncio.gather(
             blockscout_client.get_token_info(lp_addr),
             blockscout_client.get_token_holders(lp_addr, settings.holder_sample_size),

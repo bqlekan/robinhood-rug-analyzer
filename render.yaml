@@ -10,9 +10,3 @@ services:
         value: production
       - key: LOG_LEVEL
         value: INFO
-      - key: ETHERSCAN_API_KEY
-        sync: false
-      - key: BSCSCAN_API_KEY
-        sync: false
-      - key: POLYGONSCAN_API_KEY
-        sync: false
