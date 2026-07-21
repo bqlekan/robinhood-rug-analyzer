@@ -9,26 +9,27 @@ never needs a recompile to gain a new route.
 How a route is chosen (all on-chain, read-only `eth_call`s to the v3 factory + pools):
   - The buy leg always starts from wrapped-native (WETH), because the synthetic buyer
     is funded with native balance the prober wraps.
-  - Quote assets are tried in `settings.honeypot_quote_assets` order (WETH first, then
+  - Quote assets are tried in the active chain's `quote_assets` order (WETH first, then
     stables like USDG). The FIRST quote that yields a liquid path wins — order encodes
     preference, not a hardcoded WETH/USDG special case.
   - WETH quote  -> direct pool WETH/token (one hop).
   - Other quote -> WETH/quote pool + quote/token pool (two hops); both must be liquid.
   - A pool counts only if `getPool` returns a non-zero address AND its quote-side token
-    reserve (balanceOf the pool) clears `settings.honeypot_min_quote_reserve` (skips
+    reserve (balanceOf the pool) clears the chain's `min_quote_reserve` (skips
     dead/dust pools). Reserves are used, NOT the pool's `liquidity()` — that returns only
     in-range active-tick liquidity, so a concentrated-liquidity pool with out-of-range
     positions reads 0 yet still holds swappable reserves.
 
-Adding a future quote asset is a config edit (append its address to
-`honeypot_quote_assets`); no code or contract change. Everything degrades to "no route"
+Adding a future quote asset is a config edit (append its address to the chain's
+`quote_assets`, backed by `settings.honeypot_quote_assets`); no code or contract change.
+Everything degrades to "no route"
 (the caller reports `unknown`), never a crash or a false path.
 """
 
 import logging
 from dataclasses import dataclass
 
-from app.core.config import settings
+from app.core import chains
 from app.services import rpc_client
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ def encode_path(tokens: list[str], fees: list[int]) -> str:
 
 async def _get_pool(token_a: str, token_b: str, fee: int) -> str | None:
     """Factory getPool; returns the pool address or None if unset/zero/error."""
-    factory = settings.honeypot_v3_factory
+    factory = chains.active().v3_factory
     if not factory:
         return None
     data = _SEL_GET_POOL + _enc_addr_word(token_a) + _enc_addr_word(token_b) + _enc_uint_word(fee)
@@ -113,15 +114,16 @@ async def _best_fee_tier(quote_asset: str, other: str) -> int | None:
     reserves of the quote asset.
 
     `quote_asset` is the value/known-decimals side of this hop (WETH, or a quote like
-    USDG); its floor comes from `settings.honeypot_min_quote_reserve` keyed by that
+    USDG); its floor comes from the chain's `min_quote_reserve` keyed by that
     asset, with a "*" fallback. We check the pool's `balanceOf(quote_asset)` reserve
     rather than `liquidity()`: a concentrated-liquidity pool can report zero in-range
     liquidity yet still hold swappable balances. Returns the fee, or None when no
     sufficiently funded pool exists for the pair.
     """
-    floors = settings.honeypot_min_quote_reserve
+    chain = chains.active()
+    floors = chain.min_quote_reserve
     floor = floors.get(quote_asset.lower(), floors.get("*", 1))
-    for fee in settings.honeypot_fee_tiers:
+    for fee in chain.fee_tiers:
         pool = await _get_pool(quote_asset, other, fee)
         if not pool:
             continue
@@ -137,12 +139,13 @@ async def discover_route(token_address: str) -> Route | None:
     Tries each configured quote asset in order; returns the first liquid route, else None
     (caller reports "unknown"). WETH quote = direct pool; any other quote = 2-hop via WETH.
     """
-    weth = settings.honeypot_weth_address
+    chain = chains.active()
+    weth = chain.weth_address
     if not weth:
         return None
     token = token_address.lower()
 
-    for quote in settings.honeypot_quote_assets:
+    for quote in chain.quote_assets:
         q = quote.lower()
         if q == weth.lower():
             fee = await _best_fee_tier(weth, token)

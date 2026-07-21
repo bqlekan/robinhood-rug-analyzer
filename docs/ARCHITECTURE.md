@@ -73,6 +73,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Event Pipeline** | `kol_store` tables + model vocabularies | Append-only, engine-internal event/timeline logs (follow, crypto, intel). No delivery transport yet. |
 | **Persistence Layer** | `watchlist_store` (wallets), `kol_store` (KOL) | Two independent stdlib-`sqlite3` stores, each lock-guarded. |
 | **Configuration System** | `core/config.py` | One pydantic `BaseSettings`; every threshold/weight/toggle is env-overridable config. |
+| **Chain Abstraction (M22)** | `core/chains.py` | `ChainConfig` (identity + endpoints + Uniswap-v3 DEX topology) built live from `settings` via a slug registry; services read `chains.active()` instead of chain-specific `settings.*`. One chain registered (Robinhood, default); architectural only — no behaviour change. |
 | **Scheduler** | `main.py` lifespan | Two asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`), each enable-flag gated. KOL captures have no scheduler yet. |
 | **Notification Layer** | `notifications.py` (Deliverable H) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers (`log`, `memory`). Opt-in, rule-filtered, deduped, failure-isolated. See §6.1. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
@@ -566,7 +567,7 @@ behavior is tuned without touching logic.
 
 | Group | Purpose | Notable defaults |
 |---|---|---|
-| **Chain identity** | Single-chain targeting | `chain_id=4663`, `chain_name`, `dexscreener_chain="robinhood"`, `blockscout_base_url`, `rpc_url` |
+| **Chain identity** | Active-chain targeting (read via the `core/chains` abstraction) | `default_chain="robinhood"`, `chain_id=4663`, `chain_name`, `dexscreener_chain="robinhood"`, `blockscout_base_url`, `rpc_url` |
 | **Networking** | Shared HTTP pool + timeouts | `http_timeout=12.0`, `http_max_connections=20` |
 | **HTTP cache** | Near-static read caching | `http_cache_enabled=True`, `http_cache_ttl_seconds=300`, `http_cache_max_size=512` |
 | **Scan tiering** | Cheap pre-screen before deep analysis | `scan_max_tokens=15`, `scan_tiering_enabled=True`, `scan_light_promote_threshold=25`, `scan_established_holder_floor=500`, `scan_max_deep_analyses=5` |
@@ -915,10 +916,12 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M23-F/G — KOL Intelligence score + clustering | Done | `social/kol_scoring`, `kol_intel_engine`, the intel/history/event tables |
 | M23-H — Alert pipeline (transport-agnostic) | Done | `notifications.py` (`NotificationProvider` ABC, `log`/`memory` sinks, rule-filtered + deduped delivery log); consumes engine events |
 | M24 — Token Watchlist & Monitoring Engine | Done | `models/monitor.py`, `token_monitor_store` (own DB), `token_monitor` (watchlist CRUD + `run_cycle` re-analysis + change detection), `main.py` `_token_monitor_loop` (enable-gated) |
+| M22 — Multi-chain architecture (abstraction only) | Done | `core/chains.py` (`ChainConfig` model + slug→builder registry + `active()`); services read chain identity/endpoints/DEX topology from `chains.active()` instead of `settings` directly; `settings.default_chain` selects the active chain. Robinhood Chain is the sole registered chain, built live from `settings` — zero behaviour change. No new chains, no new APIs. |
 
 **Not yet built:** the KOL *capture* scheduler (a `lifespan` loop driving
-`capture_following` on a cadence — see §16) and **M22** (multi-chain
-re-architecture). All other milestones through M24 are implemented. See §16.
+`capture_following` on a cadence — see §16) and any **second chain** — M22
+shipped the abstraction (`core/chains.py`), but only Robinhood Chain is
+registered. All milestones through M24 are implemented. See §16.
 
 ---
 

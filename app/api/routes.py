@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
+from app.core import chains
 from app.core.config import settings
 from app.models.token import (
     ScanRequest,
@@ -24,11 +25,12 @@ _WATCHLIST_NOTE = (
 @router.get("/chain")
 async def chain_info() -> dict:
     """Expose the single chain this analyzer targets."""
+    chain = chains.active()
     return {
-        "chain_name": settings.chain_name,
-        "chain_id": settings.chain_id,
-        "explorer": settings.blockscout_base_url,
-        "dexscreener_chain": settings.dexscreener_chain,
+        "chain_name": chain.chain_name,
+        "chain_id": chain.chain_id,
+        "explorer": chain.blockscout_base_url,
+        "dexscreener_chain": chain.dexscreener_chain,
     }
 
 

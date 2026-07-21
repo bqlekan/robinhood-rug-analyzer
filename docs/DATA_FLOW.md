@@ -158,3 +158,15 @@ sequenceDiagram
 
 Freshness-sensitive data (market, holders, transfers) is **never cached** so
 scoring always sees live data.
+
+## Chain resolution (M22)
+
+Every chain-specific value a step reads — the Blockscout base URL, the RPC URL,
+the DexScreener chainId filter, and the honeypot DEX topology (wrapped-native,
+v3 factory, routers, quote assets, fee tiers, reserve floors) — is resolved
+through `app/core/chains.active()`, which returns the active `ChainConfig`. Today
+exactly one chain is registered (Robinhood Chain, the default), built **live from
+`settings`** on each call, so behaviour is identical to reading `settings`
+directly — this is purely the seam a future second chain would register against.
+Simulation *policy* (prober bytecode, buy amount, tax threshold) is chain-agnostic
+and stays in `settings`, not in `ChainConfig`.

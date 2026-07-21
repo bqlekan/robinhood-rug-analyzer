@@ -17,6 +17,7 @@ from app.models.token import (
 )
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
+from app.core import chains
 from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, honeypot_sim, launchpad_registry, rpc_client, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
@@ -518,7 +519,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
 
     return TokenAnalysisResponse(
         contract_address=normalized,
-        chain=settings.chain_name,
+        chain=chains.active().chain_name,
         status="analysis_completed",
         message="Rug-risk analysis completed for Robinhood Chain token using free public data sources.",
         token_age=age,
@@ -554,7 +555,7 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
 
     if not tokens:
         return ScanResponse(
-            chain=settings.chain_name,
+            chain=chains.active().chain_name,
             status="no_tokens",
             message="Could not retrieve token list from Blockscout.",
             analyzed=0,
@@ -627,7 +628,7 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
     ranked.sort(key=lambda r: r.risk_score, reverse=True)
 
     return ScanResponse(
-        chain=settings.chain_name,
+        chain=chains.active().chain_name,
         status="scan_completed",
         message=f"Analyzed and ranked {len(ranked)} Robinhood Chain tokens by rug risk.",
         analyzed=len(ranked),

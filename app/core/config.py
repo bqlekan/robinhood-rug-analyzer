@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]
 
     # Robinhood Chain identity. This app is intentionally single-chain.
+    # M22: the chain abstraction (`app/core/chains.py`) reads the fields below to
+    # build the active `ChainConfig`. `default_chain` selects which registered
+    # chain is active; only "robinhood" is registered today.
+    default_chain: str = "robinhood"
     chain_id: int = 4663
     chain_name: str = "Robinhood Chain"
     # DexScreener labels Robinhood Chain pairs with this chainId string.

@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.core.config import settings
+from app.core import chains
 from app.services.http import get_client
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,8 @@ async def fetch_token_pairs(address: str) -> list[dict[str, Any]]:
     pairs = payload.get("pairs") or []
     if not isinstance(pairs, list):
         return []
-    # Enforce single-chain scope: only keep Robinhood Chain pairs.
-    return [p for p in pairs if (p.get("chainId") or "").lower() == settings.dexscreener_chain]
+    # Enforce single-chain scope: only keep the active chain's pairs.
+    return [p for p in pairs if (p.get("chainId") or "").lower() == chains.active().dexscreener_chain]
 
 
 def choose_best_pair(pairs: list[dict[str, Any]]) -> dict[str, Any] | None:

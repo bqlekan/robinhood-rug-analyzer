@@ -5,14 +5,18 @@ from typing import Any
 
 import httpx
 
+from app.core import chains
 from app.core.config import settings
 from app.services.cache import TTLCache, cached_call
 from app.services.http import get_client
 
 logger = logging.getLogger(__name__)
 
-# Free, keyless public Blockscout REST API v2 for Robinhood Chain (chain id 4663).
-API_V2 = f"{settings.blockscout_base_url}/api/v2"
+
+def _api_v2() -> str:
+    """Blockscout v2 base for the active chain (M22). Resolved per-call so a chain
+    switch / settings override applies without reimport."""
+    return f"{chains.active().blockscout_base_url}/api/v2"
 
 # Cache ONLY near-static reads: verified contract source and contract creation
 # facts (creator/creation tx). Both are immutable for a deployed contract.
@@ -26,7 +30,7 @@ _static_cache = TTLCache(
 
 async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any] | None = None) -> Any | None:
     """GET a Blockscout v2 endpoint, returning parsed JSON or None on any failure."""
-    url = f"{API_V2}{path}"
+    url = f"{_api_v2()}{path}"
     try:
         response = await client.get(url, params=params, headers={"Accept": "application/json"})
         response.raise_for_status()

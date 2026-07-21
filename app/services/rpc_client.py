@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from app.core import chains
 from app.core.config import settings
 from app.services.cache import TTLCache, cached_call
 from app.services.http import get_client
@@ -41,7 +42,7 @@ async def _rpc(method: str, params: list[Any]) -> Any | None:
     client: httpx.AsyncClient = get_client()
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     try:
-        response = await client.post(settings.rpc_url, json=payload)
+        response = await client.post(chains.active().rpc_url, json=payload)
         response.raise_for_status()
         body = response.json()
     except httpx.HTTPError as exc:

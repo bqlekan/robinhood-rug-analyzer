@@ -770,7 +770,21 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M22 — Future multi-chain architecture
+### M22 — Multi-chain architecture ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-21). Strictly architectural — **no behavioural change**, no new
+  chain, no new API. New `app/core/chains.py` introduces a `ChainConfig` pydantic model (identity +
+  endpoints + Uniswap-v3 DEX topology) and a slug-keyed registry with exactly one entry, Robinhood
+  Chain (`settings.default_chain`, the default). `chains.active()` rebuilds the active `ChainConfig`
+  **live from `settings`** on every call, so env overrides and test monkeypatches flow straight
+  through and behaviour is byte-for-byte unchanged. Services now read chain identity/endpoints/DEX
+  topology from `chains.active()` instead of hardcoded `settings.*`: `blockscout_client` (base URL),
+  `dexscreener_client` (chain filter), `rpc_client` (RPC URL), `route_discovery` + `honeypot_sim`
+  (WETH/factory/routers/quote-assets/fee-tiers/reserve-floors), `rug_analyzer` + `/chain` (chain
+  name/id/explorer). Simulation *policy* (prober bytecode, buy amount, tax threshold) stays in
+  `settings` — it is chain-agnostic. The RPC and Blockscout clients, scoring, all APIs, and the
+  frontend are untouched. A second chain later = one more registry builder + a `default_chain`
+  switch, with zero service changes. 472 tests pass (7 new in `tests/test_chains.py`).
 
 **Goal:** (Deferred) Re-introduce multi-chain support if product direction changes.
 

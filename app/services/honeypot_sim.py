@@ -8,9 +8,9 @@ ROADMAP M10 probe). No transactions, no keys, no funds: state overrides fund a s
 buyer ephemerally inside the call.
 
 Design guarantees:
-  - Inert by default: with no router mapped for the token's DEX (`settings.dex_routers`
-    empty), no RPC fires and `status="unknown"` is returned. Behavior is unchanged in
-    production until a router is sourced.
+  - Inert by default: with no router mapped for the token's DEX (the active chain's
+    `dex_routers` empty), no RPC fires and `status="unknown"` is returned. Behavior is
+    unchanged in production until a router is sourced.
   - Every uncertainty (sim disabled, no router, RPC error, setup revert) resolves to
     "unknown" ("could not simulate") — never a crash and never a false "sellable".
   - Uniswap v3, route-agnostic: `route_discovery` picks a liquidity-verified path (direct
@@ -25,6 +25,7 @@ the result into the scorer.
 
 import logging
 
+from app.core import chains
 from app.core.config import settings
 from app.models.token import HoneypotResult, TokenMarketData
 from app.services import route_discovery, rpc_client
@@ -121,7 +122,7 @@ def _resolve_router(market: TokenMarketData | None) -> str | None:
     """Router address for the token's DEX, or None when unmapped (keeps the sim inert)."""
     if not market or not market.dex_id:
         return None
-    return settings.dex_routers.get(market.dex_id)
+    return chains.active().dex_routers.get(market.dex_id)
 
 
 async def simulate(token_address: str, market: TokenMarketData | None) -> HoneypotResult:
@@ -160,7 +161,7 @@ async def _run_roundtrip(token_address: str, market: TokenMarketData, router: st
     catching a sell revert as soldBack=0. Everything needed beyond the router — the
     wrapped-native address and the prober bytecode — is config; absent -> "unknown".
     """
-    weth = settings.honeypot_weth_address
+    weth = chains.active().weth_address
     prober = settings.honeypot_prober_code
     if not weth or not prober:
         return HoneypotResult(status="unknown",
