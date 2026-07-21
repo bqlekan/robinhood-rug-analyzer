@@ -123,12 +123,48 @@ python -m pytest tests/ -q
 
 The suite covers the pure analysis dimensions, the scoring engine (clean vs. rug, score capping), and lore parsing — all without network access.
 
-## Render Deployment
+## Deployment
 
-This project includes `render.yaml` for Render's free web service tier.
+This project includes `render.yaml` for Render's free web service tier; the same
+commands work on any host that can run a Python web process.
 
-- Build command: `pip install -r requirements.txt`
-- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Runtime:** Python 3.12 (pinned via `PYTHON_VERSION=3.12.8` in `render.yaml`; the
+  code targets 3.10+ syntax). No Node toolchain — the frontend is static.
+- **Build command:** `pip install -r requirements.txt`
+- **Start command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+  (binds all interfaces and honors the platform-provided `$PORT`).
+- **Health check:** `GET /health` returns `{"status": "ok", ...}` — dependency-free
+  (no DB, no outbound calls). Wired as Render's `healthCheckPath`; point any uptime
+  monitor or load balancer at it.
+- **Static UI + API, one process:** the API is served under `/api/v1/*` and the static
+  frontend is mounted at `/` by the same app, so the UI is **same-origin** with the API
+  and needs no CORS for normal use.
+
+### Environment variables
+
+Every setting in `app/core/config.py` has a safe default, so the app boots with **no
+required secrets** and **no API keys**. Override via environment (or a local `.env`,
+which is git-ignored). Common production overrides:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ENVIRONMENT` | `development` | Set to `production` on deploy (done in `render.yaml`). |
+| `LOG_LEVEL` | `INFO` | Root log level. |
+| `CORS_ORIGINS` | `["http://localhost:8000", "http://127.0.0.1:8000"]` | Only needed if a **separate-origin** client calls the API. |
+| `RPC_URL` | public Robinhood Chain RPC | Override with a private RPC (e.g. Alchemy) for production rate limits. |
+
+Optional background engines: the watchlist refresh loop is on by default
+(`WATCHLIST_REFRESH_ENABLED=true`); the monitoring/alert engines are **off by
+default** and opt-in via `TOKEN_MONITOR_ENABLED`, `KOL_SCHEDULER_ENABLED`, and
+`ALERTS_ENABLED` (see `app/core/config.py` for the full set). The KOL scheduler also
+requires browser binaries (`python -m playwright install chromium`); Playwright is
+lazy-imported, so the app and test suite run without them.
+
+### Logging & data
+
+Logs stream to stdout (captured by the platform) and to a rotating `logs/app.log`.
+Runtime SQLite stores under `data/` are regenerated on startup; both `logs/` and
+`data/` are git-ignored.
 
 ## Limitations
 

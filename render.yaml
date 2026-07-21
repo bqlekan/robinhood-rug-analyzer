@@ -5,7 +5,12 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
+      # Pin the interpreter so builds are reproducible (Render's default floats
+      # otherwise). The codebase uses only 3.10+ syntax; 3.12 is a stable target.
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       - key: ENVIRONMENT
         value: production
       - key: LOG_LEVEL

@@ -128,4 +128,16 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+
+@app.get("/health", tags=["ops"])
+async def health() -> dict:
+    """Liveness probe for load balancers / uptime monitors / Render health checks.
+
+    Deliberately dependency-free (no DB, no outbound calls) so it stays fast and
+    green whenever the process is up. Registered BEFORE the static mount below so
+    the catch-all `/` StaticFiles handler never shadows it."""
+    return {"status": "ok", "app": settings.app_name, "version": settings.app_version}
+
+
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
