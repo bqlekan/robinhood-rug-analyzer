@@ -75,7 +75,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Configuration System** | `core/config.py` | One pydantic `BaseSettings`; every threshold/weight/toggle is env-overridable config. |
 | **Chain Abstraction (M22)** | `core/chains.py` | `ChainConfig` (identity + endpoints + Uniswap-v3 DEX topology) built live from `settings` via a slug registry; services read `chains.active()` instead of chain-specific `settings.*`. One chain registered (Robinhood, default); architectural only — no behaviour change. |
 | **Scheduler** | `main.py` lifespan | Three asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`, `_kol_scheduler_loop`), each enable-flag gated. M25 added the KOL capture scheduler (`kol_scheduler`). |
-| **Notification Layer** | `notifications.py` (Deliverable H) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers (`log`, `memory`). Opt-in, rule-filtered, deduped, failure-isolated. See §6.1. |
+| **Notification Layer** | `notifications.py` (Deliverable H + M26 transports) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers. Sinks: `log`, `memory`, and the M26 HTTP transports `webhook` / `telegram` / `discord`. Opt-in, rule-filtered, retried, deduped, failure-isolated. See §6.1. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
 
 See [§17](#17-mermaid-diagrams) for the overall architecture diagram.
@@ -301,12 +301,12 @@ frontend; owns the lifespan-scoped background scheduler.
 - Behavior: build contributors from `list_kols_following` -> reuse best classification + latest analysis summary -> fingerprint inputs (short-circuit if unchanged) -> `detect_cluster` -> `score_project` -> `detect_cluster` again with the score (to tag `high_conviction`) -> assemble `ProjectIntelligence` -> persist + emit internal events -> `notifications.dispatch_events` (Deliverable H, best-effort).
 - Failure modes: never raises out of the public entrypoints (logged/swallowed).
 
-**`app/services/notifications.py`** — notification & delivery layer (Deliverable H).
-- Public: `dispatch_events(events, intel)`, `register_provider(provider)`, `NotificationProvider` ABC, `LogNotificationProvider`, `MemoryNotificationProvider`, `reset_for_tests()`.
-- Dependencies: `kol_store` (delivery log + dedupe), `models.kol`.
-- Config: `notify_enabled`, `notify_providers`, `notify_min_score`, `notify_min_confidence`, `notify_min_cluster_size`, `notify_event_types`.
-- Behavior: consume the just-persisted intel events -> filter by config rules against the given `ProjectIntelligence` -> skip already-delivered (event, destination) pairs -> deliver via each provider -> record every attempt in `notification_deliveries`. Generates no intelligence.
-- Failure modes: no-ops when disabled; a failing provider or store write is logged, recorded, and swallowed — never propagates to the caller.
+**`app/services/notifications.py`** — notification & delivery layer (Deliverable H + M26 transports).
+- Public: `dispatch_events(events, intel)`, `register_provider(provider)`, `NotificationProvider` ABC, `LogNotificationProvider`, `MemoryNotificationProvider`, `WebhookProvider`, `TelegramProvider`, `DiscordWebhookProvider`, `reset_for_tests()`.
+- Dependencies: `kol_store` (delivery log + dedupe), `models.kol`, `httpx` (M26 HTTP transports, per-send sync `Client`).
+- Config: `notify_enabled`, `notify_providers`, `notify_min_score`, `notify_min_confidence`, `notify_min_cluster_size`, `notify_event_types`; M26 transport knobs `notify_retry_count`, `notify_retry_delay_seconds`, `notify_request_timeout_seconds`, `notify_webhook_url`/`_headers`/`_secret`/`_signature_header`, `notify_telegram_bot_token`/`_chat_id`, `notify_discord_webhook_url`.
+- Behavior: consume the just-persisted intel events -> filter by config rules against the given `ProjectIntelligence` -> skip already-delivered (event, destination) pairs -> deliver via each provider (with shared retry/backoff) -> record every attempt in `notification_deliveries`. Generates no intelligence; the transports know nothing about KOLs/scoring/clustering — they ship a ready-made `Notification`.
+- Failure modes: no-ops when disabled (zero overhead); a transport self-skips (records `failed`, never raises) when its own config is absent; a failing provider or store write is logged, recorded, and swallowed — never propagates to the caller, and one provider's failure never blocks the others.
 
 ### 3.6 Social provider package (`app/services/social/`)
 
@@ -441,7 +441,7 @@ when that cluster clears the conviction bar, and `project_momentum_detected` whe
 the distinct-KOL count grows by `>= kol_momentum_min_new_kols` (and there was a
 prior score).
 
-### 6.1 Notification & delivery layer (Deliverable H)
+### 6.1 Notification & delivery layer (Deliverable H + M26 transports)
 
 `services/notifications.py` is the transport layer. It **consumes** the
 `kol_intel_events` the engine already produced and delivers the alert-worthy ones
@@ -449,12 +449,16 @@ to configured destinations. It generates no intelligence — no scoring, no
 analysis, no event creation — it only reads the already-computed
 `ProjectIntelligence` to decide what to forward.
 
-- **Provider abstraction:** `NotificationProvider` ABC (`name` + `send`). Two
-  providers ship, exactly the roadmap set: `LogNotificationProvider` (`"log"`,
-  the default, logs the alert) and `MemoryNotificationProvider` (`"memory"`, an
-  in-process buffer for a UI feed / tests). New transports (Telegram/Discord/
-  webhook) register a factory in `_PROVIDER_FACTORIES` and a name in
-  `settings.notify_providers` — producers never change.
+- **Provider abstraction:** `NotificationProvider` ABC (`name` + `send`). Five
+  providers ship: the always-available `LogNotificationProvider` (`"log"`, the
+  default) and `MemoryNotificationProvider` (`"memory"`, an in-process buffer for
+  a UI feed / tests), plus the M26 HTTP transports `WebhookProvider` (`"webhook"`,
+  generic JSON POST + optional HMAC-SHA256 signature + custom headers),
+  `TelegramProvider` (`"telegram"`, Bot API `sendMessage`, Markdown), and
+  `DiscordWebhookProvider` (`"discord"`, rich embed). New transports register a
+  factory in `_PROVIDER_FACTORIES` and a name in `settings.notify_providers` —
+  producers never change. Each HTTP transport self-skips (raises → recorded
+  `failed`, never crashes) when its own required config (URL / token) is absent.
 - **Forwarding rules (all config):** `notify_enabled` (master switch, off by
   default), `notify_min_score`, `notify_min_confidence`, `notify_min_cluster_size`,
   and `notify_event_types` (which event types to forward). All AND-ed, judged
@@ -464,6 +468,12 @@ analysis, no event creation — it only reads the already-computed
   disabled; **fully failure-isolated** — a failing provider or store write is
   logged + recorded and the loop continues, so a delivery failure can never
   interrupt the capture/analysis that produced the events.
+- **Retry/backoff (M26):** `_deliver_one` wraps every provider send in a shared
+  retry loop — `notify_retry_count` total tries with `notify_retry_delay_seconds ×
+  attempt` linear backoff, applied uniformly to all providers (log/memory simply
+  never fail). Only the final outcome is recorded. Defaults to 1 (no retry) so
+  opt-in HTTP transports enable retry explicitly. HTTP timeout is
+  `notify_request_timeout_seconds`.
 - **Persistence + dedupe:** every attempt is recorded in `notification_deliveries`
   (event_key, event_type, platform, account_key, destination, status, error,
   attempted_at). `UNIQUE(event_key, destination)` + the `was_delivered` check mean
@@ -582,6 +592,7 @@ behavior is tuned without touching logic.
 | **KOL clustering** | Convergence windows | `kol_cluster_min_kols=2`, `kol_cluster_window_hours=72`, `kol_cluster_rapid_*`, `kol_cluster_tier1_min`, `kol_cluster_high_conviction_score=75` |
 | **KOL correlation** | Momentum + retention | `kol_momentum_min_new_kols=1`, `kol_intel_min_actionable_score=40`, `kol_intel_history_retain=200` |
 | **Notifications (H)** | Delivery + forwarding rules | `notify_enabled=False`, `notify_providers=["log"]`, `notify_min_score=0`, `notify_min_confidence="very_low"`, `notify_min_cluster_size=0`, `notify_event_types=[cluster, high_conviction, momentum]` |
+| **Notification transports (M26)** | Real HTTP sinks + retry (all optional, inert unless opted in) | `notify_retry_count=1`, `notify_retry_delay_seconds=1.0`, `notify_request_timeout_seconds=10.0`, `notify_webhook_url`, `notify_webhook_headers`, `notify_webhook_secret`, `notify_telegram_bot_token`, `notify_telegram_chat_id`, `notify_discord_webhook_url` |
 | **Token monitor (M24)** | Background re-analysis scheduler | `token_monitor_enabled=False`, `token_monitor_interval_seconds=900`, `token_monitor_concurrency=3`, `token_monitor_timeout_seconds=120`, `token_monitor_retry_*`, `token_monitor_seed` |
 | **KOL scheduler (M25)** | Background KOL capture scheduler | `kol_scheduler_enabled=False`, `kol_scheduler_interval_seconds=3600`, `kol_scheduler_concurrency=2`, `kol_scheduler_timeout_seconds=180`, `kol_scheduler_retry_attempts=2`, `kol_scheduler_retry_backoff_seconds=2.0` |
 | **LLM (optional)** | Richer lore summaries | `llm_api_key`, `llm_base_url`, `llm_model` (empty = extractive fallback) |
@@ -920,10 +931,11 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M24 — Token Watchlist & Monitoring Engine | Done | `models/monitor.py`, `token_monitor_store` (own DB), `token_monitor` (watchlist CRUD + `run_cycle` re-analysis + change detection), `main.py` `_token_monitor_loop` (enable-gated) |
 | M22 — Multi-chain architecture (abstraction only) | Done | `core/chains.py` (`ChainConfig` model + slug→builder registry + `active()`); services read chain identity/endpoints/DEX topology from `chains.active()` instead of `settings` directly; `settings.default_chain` selects the active chain. Robinhood Chain is the sole registered chain, built live from `settings` — zero behaviour change. No new chains, no new APIs. |
 | M25 — KOL Intelligence Automation | Done | `kol_scheduler` (`capture_one` timeout+retry/backoff, `run_cycle` bounded-concurrency sweep, duplicate-run lock); `main.py` `_kol_scheduler_loop` (enable-gated). Orchestration only — reuses `kol_watchlist.capture_following` wholesale (fetch→diff→crypto→score→cluster→events unchanged) |
+| M26 — Notification transport layer | Done | `notifications.py` gains three HTTP transports (`WebhookProvider` incl. optional HMAC signature, `TelegramProvider`, `DiscordWebhookProvider`) + shared retry/backoff in `_deliver_one`; all plug into the existing M23-H registry/dispatcher/dedupe. Infra only — no new intelligence; providers know nothing of KOL/scoring/clustering, they just ship a ready-made `Notification` |
 
 **Not yet built:** any **second chain** — M22 shipped the abstraction
 (`core/chains.py`), but only Robinhood Chain is registered. All milestones
-through M25 are implemented. See §16.
+through M26 are implemented. See §16.
 
 ---
 
@@ -937,7 +949,7 @@ Documented honestly — none of this is hidden.
 - **Honeypot sim is inert** on any chain without a mapped router; only Robinhood Chain (Uniswap v3) is wired.
 
 ### Known limitations
-- **No real notification transports.** M23-H shipped the publisher layer with `log`/`memory` sinks only; Telegram / Discord / webhook / UI adapters are not built, so alert-worthy events reach only logs and the in-process buffer.
+- **Notification transports are HTTP-synchronous.** M26 added `webhook`/`telegram`/`discord` over the M23-H layer, but each `send` is a blocking `httpx.Client` POST on the (synchronous) dispatcher call-in; with retry, a slow endpoint can add up to `retry_count × timeout` to that call. Fine at the current alert volume (off by default; only alert-worthy events dispatch), but a high-volume deployment would want an async/queued transport. No UI sink adapter yet.
 - **No DB migration framework.** Tables are `CREATE ... IF NOT EXISTS`; additive JSON columns are the only safe evolution today. A real schema change needs an explicit migration.
 - **`_prune_history` uses table-name string interpolation.** Safe because it is only ever called with internal constant table names, but it is not parameterized.
 - **`lore_client` uses its own `httpx.AsyncClient`,** outside the shared bounded pool, so its calls are not counted against the global connection cap.
@@ -948,7 +960,7 @@ Documented honestly — none of this is hidden.
 - Alpha scoring — a reserved, inert KOL component until a scorer exists.
 
 ### Planned refactors
-- Add real notification transports (Telegram / Discord / webhook / UI) as `NotificationProvider` adapters — the M23-H publisher layer is in place; only sinks are missing.
+- Add a **UI feed** transport (surface the `memory` buffer / a new sink in the frontend) — the M26 HTTP transports (webhook/telegram/discord) already cover external delivery; an in-app feed is the remaining sink.
 - Generalize the single-chain assumptions in `rug_analyzer` + clients behind a chain registry when/if multi-chain is greenlit.
 
 ---
@@ -970,11 +982,12 @@ unchanged M23 pipeline, and resume-after-restart is free because all state lives
 in `kol_store`. This is the driver that turns the wired-but-manual KOL pipeline
 into a continuously running engine.
 
-### Notification Engine (Deliverable H) — **built**
-Shipped as `services/notifications.py` (§6.1): a `NotificationProvider` interface
-with `log` + `memory` sinks, config-driven forwarding rules, a delivery audit log
-with dedupe, and full failure isolation. Remaining future work here is adapters
-for real transports (Telegram / Discord / webhook / UI), each a `NotificationProvider`
+### Notification Engine (Deliverable H + M26 transports) — **built**
+Shipped as `services/notifications.py` (§6.1): a `NotificationProvider` interface,
+config-driven forwarding rules, a delivery audit log with dedupe, full failure
+isolation, and shared retry/backoff. Five sinks ship: `log` + `memory` (M23-H)
+and the `webhook` / `telegram` / `discord` HTTP transports (M26). Remaining future
+work is a UI feed sink and any further transport, each a `NotificationProvider`
 subclass registered per §13.5 — no producer change.
 
 ### AI Trading Intelligence Engine

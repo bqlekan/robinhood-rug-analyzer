@@ -1144,6 +1144,65 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### M26 — Notification Transport Layer (real HTTP sinks for the existing delivery layer) ✅ COMPLETE
+
+- **Goal:** Deliver the intelligence events the KOL engine already produces through real, external
+  transports — a generic **webhook**, **Telegram**, and **Discord** — so an alert-worthy convergence /
+  cluster / momentum event actually reaches a human channel, not just the log / in-memory sinks M23-H
+  shipped. Pure infrastructure: no new intelligence, no scoring/detection/clustering change.
+- **Why it matters:** M23-H built the whole dispatch/rule/dedupe/audit machinery but only wired the
+  `log` and `memory` sinks; the docs flagged "real transports" as the remaining future work. Without an
+  external sink the leading social signal never leaves the process. This is the last hop that turns a
+  persisted event into an actual notification.
+- **Design rule (non-negotiable):** transports **extend, never redesign.** The existing
+  `notifications.dispatch_events` stays the one call-in and the one NotificationManager; the existing
+  `NotificationProvider` ABC + `_PROVIDER_FACTORIES` registry + config gating + dedupe + delivery
+  logging + failure isolation are all **reused unchanged**. A provider receives a ready-made
+  `Notification` (title / body / self-describing payload) and ships it — it knows **nothing** about
+  KOLs, rug analysis, scoring, clustering, or snapshot diffing. Retry/backoff is added **once**, in the
+  shared `_deliver_one`, so it covers every provider uniformly (log/memory simply never fail).
+- **Status:** ✅ **COMPLETE** (2026-07-21).
+  _As built:_ three new providers in `app/services/notifications.py` — `WebhookProvider` (generic JSON
+  HTTP POST, config-driven extra headers, optional HMAC-SHA256 body signature under a configurable
+  header), `TelegramProvider` (Bot API `sendMessage`, Markdown), and `DiscordWebhookProvider` (standard
+  incoming webhook with a rich embed). Each does one **synchronous** POST (the dispatcher is sync,
+  called inline from the engine) via a short-lived `httpx.Client` with a configurable timeout, and
+  **raises on any non-2xx / transport error** so the shared retry + isolation handle it uniformly. Each
+  **self-skips** (raises a clean config error, recorded as a `failed` attempt, never a crash) when its
+  own required settings (URL / token / chat id) are absent — an enabled-but-unconfigured transport can
+  never sink delivery. Retry/backoff added to `_deliver_one` (`notify_retry_count` total tries,
+  `notify_retry_delay_seconds` × attempt linear backoff); only the **final** outcome is recorded, so a
+  transient failure that later succeeds leaves a single `sent` row and dedupe still applies. All three
+  registered in `_PROVIDER_FACTORIES` (names `webhook` / `telegram` / `discord`) — a transport fires
+  only when its name is in `notify_providers` **and** `notify_enabled` is on, so the whole layer is
+  **inert / zero-overhead** when disabled. Covered by `tests/test_notification_transports.py` (13 tests:
+  each provider's payload/headers/HMAC signature/embed shape, self-skip on missing config, raise-on-non-2xx,
+  retry-exhaust-then-`failed`, retry-then-`sent`, no-retry-at-count-1, cross-provider isolation, and
+  disabled ⇒ no HTTP; `httpx.Client` stubbed so nothing touches the network).
+- **Files/modules:** **Touched additively:** `app/services/notifications.py` (three provider classes +
+  a shared `_post_json` primitive + retry/backoff in `_deliver_one`; the ABC/registry/dispatch/dedupe/
+  audit surface is unchanged), `app/core/config.py` (new `notify_retry_count` / `notify_retry_delay_seconds`
+  / `notify_request_timeout_seconds` / `notify_webhook_*` / `notify_telegram_*` / `notify_discord_webhook_url`
+  settings, all optional with inert defaults), `tests/test_notification_transports.py` (new). `kol_intel_engine`,
+  scoring, detection, clustering, the event pipeline, all APIs, and the frontend are **untouched.**
+- **Integration points:** (1) `notifications.dispatch_events()` — the unchanged single call-in from
+  `kol_intel_engine._persist_and_emit`; (2) the existing `NotificationProvider` ABC + `_PROVIDER_FACTORIES`
+  registry (the documented seam for adding a transport with no producer change); (3) `kol_store.was_delivered`
+  / `record_delivery` for dedupe + audit (reused as-is); (4) `httpx` (already a dependency) for the POSTs;
+  (5) pydantic `BaseSettings` for all config.
+- **Dependencies:** M23-H (the dispatch/rule/dedupe/audit layer these transports plug into). **No new
+  external dependency** (`httpx` already ships).
+- **Effort:** Small–Medium (three thin transports + shared retry; zero new intelligence) · **Risk:** Low
+  (additive; off by default; the dispatch layer + all producers ship unmodified).
+- **Expected improvement:** Closes the last gap between "event persisted" and "human notified" — the M23
+  signal can now reach webhook / Telegram / Discord. Infrastructure-only; no detection change.
+- **Acceptance criteria:** each transport delivers a correctly-shaped payload to its endpoint; a missing
+  config self-skips without crashing; a non-2xx / transport error is retried per policy then recorded
+  `failed`; one transport failing never blocks the others; the layer is opt-in and adds zero overhead when
+  disabled; **existing tests stay green (zero regression — 484 → 497).**
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.

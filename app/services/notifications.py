@@ -11,20 +11,31 @@ what clears the forwarding rules, then hands a formatted message to each provide
 
 Design (kept deliberately small; nothing speculative):
   - `NotificationProvider` — a tiny ABC: a `name` + a `send(notification)`. The one
-    seam for adding Telegram/Discord/webhook/UI later with no producer change.
-  - Two providers, exactly the ones the roadmap asks for: `LogNotificationProvider`
-    (emits via the app logger) and `MemoryNotificationProvider` (in-process buffer,
-    the UI-feed / test sink).
+    seam for adding a transport with no producer change.
+  - Built-in sinks: `LogNotificationProvider` (app logger) and
+    `MemoryNotificationProvider` (in-process buffer, the UI-feed / test sink).
+  - M26 HTTP transports: `WebhookProvider` (generic signed JSON POST),
+    `TelegramProvider` (Bot API), `DiscordWebhookProvider` (rich embed). Each does a
+    single synchronous POST and RAISES on failure; the shared retry/backoff +
+    failure-isolation lives once in `_deliver_one`, so every provider gets it uniformly.
   - `dispatch_events(...)` — the engine's single call-in. Config-gated, rule-filtered,
     dedupe-guarded, and fully failure-isolated: a provider raising never propagates,
     never interrupts analysis; the failure is logged and recorded, processing continues.
 
 Every threshold and destination is config (`settings.notify_*`). Delivery attempts
 (status/timestamp/destination/error) are persisted via `kol_store` for audit + dedupe.
+Zero overhead when disabled: `dispatch_events` returns immediately if `notify_enabled`
+is off, before touching any provider.
 """
 
+import hashlib
+import hmac
+import json
 import logging
+import time
 from abc import ABC, abstractmethod
+
+import httpx
 
 from app.core.config import settings
 from app.models.kol import CONFIDENCE_LEVELS, KolIntelEvent, ProjectIntelligence
@@ -100,11 +111,118 @@ class MemoryNotificationProvider(NotificationProvider):
             del self.sent[: -self._MAX]
 
 
-# Provider registry. Only the roadmap sinks. A new transport registers its factory
-# here (and its name goes in `settings.notify_providers`) — producers never change.
+# --- HTTP transport providers (M26) ------------------------------------------
+# These deliver over the network. Each does a single synchronous HTTP POST (the
+# dispatcher is sync, called inline from the engine) via a short-lived
+# `httpx.Client`, and RAISES on any non-2xx / transport error so the shared
+# retry + failure-isolation in `_deliver_one` handles it uniformly. None of them
+# knows anything about KOLs / scoring / clustering — they receive a ready-made
+# `Notification` and ship its title/body/payload. All are inert unless their
+# required config (URL / token) is present, so a misconfigured provider degrades
+# to a clean "skipped", never a crash.
+
+
+def _post_json(url: str, payload: dict, *, headers: dict | None = None) -> None:
+    """POST `payload` as JSON and raise on any failure (non-2xx or transport).
+    The one network primitive the HTTP providers share."""
+    timeout = max(1.0, float(settings.notify_request_timeout_seconds))
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(url, json=payload, headers=headers or {})
+        resp.raise_for_status()
+
+
+class WebhookProvider(NotificationProvider):
+    """Generic HTTP webhook: POST a JSON payload to `notify_webhook_url` with
+    optional custom headers and an optional HMAC-SHA256 signature.
+
+    Signature: when `notify_webhook_secret` is set, the hex HMAC of the exact JSON
+    body is sent in the `notify_webhook_signature_header` header so the receiver can
+    verify authenticity. Inert (skipped) when no URL is configured."""
+
+    name = "webhook"
+
+    def send(self, notification: Notification) -> None:
+        url = (settings.notify_webhook_url or "").strip()
+        if not url:
+            raise ValueError("webhook provider enabled but notify_webhook_url is empty")
+        payload = {
+            "event_key": notification.event_key,
+            "event_type": notification.event_type,
+            "platform": notification.platform,
+            "account_key": notification.account_key,
+            "project_handle": notification.project_handle,
+            "title": notification.title,
+            "body": notification.body,
+            "payload": notification.payload,
+        }
+        headers = dict(settings.notify_webhook_headers or {})
+        secret = (settings.notify_webhook_secret or "").strip()
+        if secret:
+            # Sign the exact bytes we send (compact separators, key order preserved)
+            # so the receiver can recompute the HMAC over the raw body verbatim.
+            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            sig = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+            headers[settings.notify_webhook_signature_header] = sig
+            headers.setdefault("Content-Type", "application/json")
+            timeout = max(1.0, float(settings.notify_request_timeout_seconds))
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(url, content=body, headers=headers)
+                resp.raise_for_status()
+            return
+        _post_json(url, payload, headers=headers)
+
+
+class TelegramProvider(NotificationProvider):
+    """Telegram Bot API sink: send a Markdown message to a chat via the bot's
+    `sendMessage`. Inert (skipped) unless both bot token and chat id are set."""
+
+    name = "telegram"
+
+    def send(self, notification: Notification) -> None:
+        token = (settings.notify_telegram_bot_token or "").strip()
+        chat_id = (settings.notify_telegram_chat_id or "").strip()
+        if not token or not chat_id:
+            raise ValueError("telegram provider enabled but bot token / chat id missing")
+        # Markdown, escaping is the caller's concern for arbitrary text; our title/body
+        # are engine-formatted plain strings, so a fenced block keeps them literal.
+        text = f"*{notification.title}*\n```\n{notification.body}\n```"
+        _post_json(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        )
+
+
+class DiscordWebhookProvider(NotificationProvider):
+    """Discord webhook sink: POST a rich embed (title + body + a couple of fields)
+    to `notify_discord_webhook_url`. Inert (skipped) when no URL is configured."""
+
+    name = "discord"
+
+    def send(self, notification: Notification) -> None:
+        url = (settings.notify_discord_webhook_url or "").strip()
+        if not url:
+            raise ValueError("discord provider enabled but notify_discord_webhook_url is empty")
+        embed = {
+            "title": notification.title,
+            "description": notification.body,
+            "fields": [
+                {"name": "event", "value": notification.event_type, "inline": True},
+                {"name": "account", "value": notification.account_key, "inline": True},
+            ],
+        }
+        _post_json(url, {"embeds": [embed]})
+
+
+# Provider registry. Log/memory are the always-available sinks; the three M26
+# transports (webhook/telegram/discord) deliver over the network. A new transport
+# registers its factory here (and its name goes in `settings.notify_providers`) —
+# producers never change.
 _PROVIDER_FACTORIES: dict[str, type[NotificationProvider]] = {
     LogNotificationProvider.name: LogNotificationProvider,
     MemoryNotificationProvider.name: MemoryNotificationProvider,
+    WebhookProvider.name: WebhookProvider,
+    TelegramProvider.name: TelegramProvider,
+    DiscordWebhookProvider.name: DiscordWebhookProvider,
 }
 
 # Instantiated singletons, so a stateful sink (memory) keeps its buffer across calls.
@@ -238,16 +356,30 @@ def _deliver_one(
         account_key=event.account_key, project_handle=event.project_handle,
         title=title, body=body, payload=event.payload,
     )
-    try:
-        provider.send(notification)
-    except Exception as exc:  # noqa: BLE001 — isolate a failing destination
-        logger.warning(
-            "notification delivery failed via %s for %s:%s: %s",
-            name, event.platform, event.account_key, exc,
-        )
-        _record(event, event_key, name, "failed", str(exc))
-        return
-    _record(event, event_key, name, "sent", None)
+
+    # Shared retry/backoff (M26): applies uniformly to every provider — the log/memory
+    # sinks never raise, so this only ever re-tries the flaky HTTP transports. `attempts`
+    # is total tries (1 = no retry); the delay grows linearly with the attempt number.
+    # Only the FINAL outcome is recorded, so a transient failure that later succeeds
+    # leaves a single `sent` row (and dedupe applies as before).
+    attempts = max(1, int(settings.notify_retry_count))
+    delay = max(0.0, float(settings.notify_retry_delay_seconds))
+    last_error: str | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            provider.send(notification)
+        except Exception as exc:  # noqa: BLE001 — isolate a failing destination
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "notification delivery via %s for %s:%s failed (attempt %d/%d): %s",
+                name, event.platform, event.account_key, attempt, attempts, last_error,
+            )
+            if attempt < attempts and delay:
+                time.sleep(delay * attempt)
+        else:
+            _record(event, event_key, name, "sent", None)
+            return
+    _record(event, event_key, name, "failed", last_error)
 
 
 def _record(

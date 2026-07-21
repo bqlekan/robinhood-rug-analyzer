@@ -82,7 +82,9 @@ Project Intelligence  → kol_scoring.score_project + detect_cluster → Project
   ↓
 Event Generation      → kol_intel_events (score_updated, cluster, momentum, ...)
   ↓
-Notification Layer    → PLANNED (Deliverable H) — no transport exists yet
+Notification Layer    → notifications.dispatch_events (M23-H) → rule-filter →
+                         deliver via each configured provider (M26: log/memory +
+                         webhook/telegram/discord transports) → record + dedupe
   ↓
 Future AI Reasoning   → PLANNED — consumes ProjectIntelligence + timelines
 ```
@@ -142,7 +144,7 @@ sequenceDiagram
 - **Reuse** — the crypto pipeline calls the existing analyzer through a per-address TTL cache (deduped across KOLs); correlation reads the stored analysis summary, never recomputing.
 - **Incremental** — `update_project_intelligence` fingerprints inputs and returns the previous object unchanged when nothing changed (no rescore/history/events).
 - **Best-effort** — the crypto and intel stages are wrapped in try/except and swallowed; a failure there never sinks a capture that already succeeded.
-- **Internal-only** — the flow ends at persisted engine-internal events. Delivery (notification) and AI reasoning are planned, not built.
+- **Delivery is downstream + isolated** — the pipeline's job ends at persisted engine-internal events; the notification layer (below) consumes them separately, and a delivery failure can never reach back into capture/analysis. AI reasoning remains planned, not built.
 
 ### Automating Path B (M25)
 
@@ -167,6 +169,33 @@ KOL is isolated (one failure/hang never sinks the cycle; a cycle never kills the
 loop), and **resume-after-restart is free**: all state (snapshots, `sync_meta`,
 followed accounts) already lives in `kol_store`, so a fresh process just resumes
 iterating the persisted roster and diffs against the last persisted snapshot.
+
+### Notification delivery (Deliverable H + M26 transports)
+
+`kol_intel_engine._persist_and_emit` makes one call — `notifications.dispatch_events(events, intel)` —
+right after it persists the events. Delivery reuses the already-computed
+`ProjectIntelligence`; it recomputes nothing:
+
+```text
+dispatch_events(events, intel)     → no-op if notify_enabled is off (zero overhead)
+  ↓ per event: _passes_rules (type / score / confidence / cluster-size, all config-AND-ed)
+  ↓ per configured provider in notify_providers:
+_deliver_one(name, event, …)       → skip if (event_key, destination) already delivered (dedupe)
+  ↓ retry loop (notify_retry_count, linear backoff) around provider.send:
+      log / memory                 → always-available sinks (never fail)
+      webhook  → HTTP POST JSON (+ optional HMAC-SHA256 signature header)
+      telegram → Bot API sendMessage (Markdown)
+      discord  → webhook POST (rich embed)
+  ↓ record_delivery (status/error/attempted_at) — the audit log + dedupe seam
+```
+
+Each transport does one synchronous `httpx.Client` POST and **raises** on any
+non-2xx / transport error, so the dispatcher's shared retry + failure isolation
+handle every provider uniformly: one destination failing never blocks the others,
+and no delivery failure ever propagates back to the engine. A transport whose
+required config (URL / token) is absent self-skips (a recorded `failed`, never a
+crash). The providers know nothing about KOLs, scoring, or clustering — they
+receive a ready-made `Notification` and ship its `title`/`body`/`payload`.
 
 ---
 

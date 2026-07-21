@@ -398,6 +398,40 @@ class Settings(BaseSettings):
         "kol_cluster_detected", "high_conviction_cluster", "project_momentum_detected",
     ]
 
+    # --- Notification transport layer (M26) ----------------------------------
+    # Real HTTP transports for the existing delivery layer. These EXTEND the M23-H
+    # dispatcher/registry — they add no new dispatch path. A transport is used only
+    # when its name is in `notify_providers` AND notifications are enabled, so all of
+    # this is inert (zero overhead) unless an operator opts in. Each transport also
+    # self-skips (records a "failed" attempt, never raises) when its own required
+    # settings are absent, so an enabled-but-unconfigured transport can't crash delivery.
+    #
+    # Retry/backoff — applied uniformly by the dispatcher around EVERY provider send
+    # (log/memory included; they simply never fail). `retry_count` is total tries per
+    # (event, destination); the base delay is multiplied by the attempt number. Kept
+    # small — delivery is best-effort and must never stall the (synchronous) engine
+    # call-in for long. Defaults to 1 (no retry), so behaviour is unchanged until an
+    # operator opts in; bump it when enabling the flaky HTTP transports below.
+    notify_retry_count: int = 1
+    notify_retry_delay_seconds: float = 1.0
+    # Per-request HTTP timeout (seconds) shared by all HTTP transports below.
+    notify_request_timeout_seconds: float = 10.0
+    # Webhook transport ("webhook"): generic JSON HTTP POST. Empty URL => self-skip.
+    notify_webhook_url: str = ""
+    # Extra headers merged onto the webhook POST (e.g. an auth token). Config-driven.
+    notify_webhook_headers: dict[str, str] = {}
+    # Optional HMAC-SHA256 secret. When set, the raw JSON body is signed and the hex
+    # digest sent in the `notify_webhook_signature_header` header, so the receiver can
+    # verify authenticity. Empty => unsigned.
+    notify_webhook_secret: str = ""
+    # Header the webhook HMAC signature is sent under (when a secret is set).
+    notify_webhook_signature_header: str = "X-Signature-256"
+    # Telegram transport ("telegram"): Bot API sendMessage. Both required, else self-skip.
+    notify_telegram_bot_token: str = ""
+    notify_telegram_chat_id: str = ""
+    # Discord transport ("discord"): standard incoming webhook URL. Empty => self-skip.
+    notify_discord_webhook_url: str = ""
+
     # --- Token Watchlist & Monitoring Engine (M24) --------------------------
     # Master switch for the background monitoring scheduler. Off by default —
     # like every other engine here it is opt-in and does NO background work
