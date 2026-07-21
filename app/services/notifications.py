@@ -340,22 +340,30 @@ def _event_key(event: KolIntelEvent) -> str:
 def _deliver_one(
     name: str, event: KolIntelEvent, event_key: str, title: str, body: str,
 ) -> None:
-    """Deliver one event to one destination, with dedupe + per-destination isolation.
-    A failure is recorded and swallowed here so one bad destination never blocks the
-    others (or the caller)."""
-    provider = _get_provider(name)
-    if provider is None:
-        logger.warning("unknown notification provider %r — skipping", name)
-        return
-
-    if kol_store.was_delivered(event_key, name):
-        return
-
+    """Deliver one intel event to one destination. Builds a `Notification` and
+    delegates to the shared `deliver` core (dedupe + retry + record)."""
     notification = Notification(
         event_key=event_key, event_type=event.event_type, platform=event.platform,
         account_key=event.account_key, project_handle=event.project_handle,
         title=title, body=body, payload=event.payload,
     )
+    deliver(notification, name, when=event.detected_at)
+
+
+def deliver(notification: Notification, name: str, *, when: str | None = None) -> str:
+    """Deliver one already-built `Notification` to one destination, with dedupe +
+    per-destination isolation + shared retry/backoff. Returns the final status
+    ("sent" | "failed" | "skipped"). This is the ONE delivery implementation — the
+    KOL intel path and the M27 alert engine both go through it, so transport code
+    is never duplicated. Never raises: a failure is recorded and swallowed here so
+    one bad destination never blocks the others (or the caller)."""
+    provider = _get_provider(name)
+    if provider is None:
+        logger.warning("unknown notification provider %r — skipping", name)
+        return "skipped"
+
+    if kol_store.was_delivered(notification.event_key, name):
+        return "skipped"
 
     # Shared retry/backoff (M26): applies uniformly to every provider — the log/memory
     # sinks never raise, so this only ever re-tries the flaky HTTP transports. `attempts`
@@ -372,27 +380,29 @@ def _deliver_one(
             last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
                 "notification delivery via %s for %s:%s failed (attempt %d/%d): %s",
-                name, event.platform, event.account_key, attempt, attempts, last_error,
+                name, notification.platform, notification.account_key,
+                attempt, attempts, last_error,
             )
             if attempt < attempts and delay:
                 time.sleep(delay * attempt)
         else:
-            _record(event, event_key, name, "sent", None)
-            return
-    _record(event, event_key, name, "failed", last_error)
+            _record_notification(notification, name, "sent", None, when)
+            return "sent"
+    _record_notification(notification, name, "failed", last_error, when)
+    return "failed"
 
 
-def _record(
-    event: KolIntelEvent, event_key: str, destination: str,
-    status: str, error: str | None,
+def _record_notification(
+    notification: Notification, destination: str,
+    status: str, error: str | None, when: str | None,
 ) -> None:
-    """Persist one delivery attempt. A store failure here is itself isolated — the
-    audit log must never be the thing that breaks delivery of a real alert."""
+    """Persist one delivery attempt from a `Notification`. Store failure is isolated —
+    the audit log must never be the thing that breaks delivery of a real alert."""
     try:
         kol_store.record_delivery(
-            event_key=event_key, event_type=event.event_type, platform=event.platform,
-            account_key=event.account_key, destination=destination,
-            status=status, error=error, when=event.detected_at,
+            event_key=notification.event_key, event_type=notification.event_type,
+            platform=notification.platform, account_key=notification.account_key,
+            destination=destination, status=status, error=error, when=when,
         )
     except Exception:  # noqa: BLE001
         logger.exception("failed to record notification delivery (%s)", destination)

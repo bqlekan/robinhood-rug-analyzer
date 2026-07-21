@@ -197,6 +197,32 @@ required config (URL / token) is absent self-skips (a recorded `failed`, never a
 crash). The providers know nothing about KOLs, scoring, or clustering — they
 receive a ready-made `Notification` and ship its `title`/`body`/`payload`.
 
+### Watchlist alerts (M27)
+
+Two event streams that were produced but never delivered — token-monitor change
+events (M24) and KOL new-follow events (M23) — now reach the notification
+providers through the **alert engine** (`app/services/alert_engine.py`), gated by
+`alerts_enabled`:
+
+```text
+token_monitor.run_cycle → per token: monitor_once → MonitorEvents (risk/liquidity/
+  honeypot/concentration/smart-wallet/privilege/…)
+     ↓ alert_engine.process_monitor_result(result, entry)   [isolated, no-op if disabled]
+kol_watchlist.capture_following → diff.events() → new_follow FollowEvents
+     ↓ alert_engine.process_follow_events(platform, handle, events)
+  ↓ evaluate(events, subject): EVENT_TO_ALERT map → per-type rule (enabled?
+       per-token override > global > default) → severity gate → optional aggregate
+  ↓ dispatch(alerts): cooldown (from the persisted delivery log) + dedupe
+notifications.deliver(Notification, provider)   → the SAME M23-H/M26 delivery path
+```
+
+The engine only *connects* — it maps each existing event to one of ten alert
+types, renders a human-readable message from the event's own payload, and reuses
+`notifications.deliver` (providers + retry + dedupe + audit). It computes nothing,
+generates no events, and is a no-op with zero overhead when `alerts_enabled` is
+off. The concentration / smart-wallet / privilege alert types are fed by three
+scalars `MonitorSnapshot` now copies verbatim from the reused analysis.
+
 ---
 
 ## Where caching vs persistence sits

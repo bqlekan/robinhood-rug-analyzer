@@ -37,7 +37,7 @@ from app.models.monitor import (
     TokenWatchEntry,
 )
 from app.models.token import is_valid_address
-from app.services import kol_store, rug_analyzer, token_monitor_store
+from app.services import alert_engine, kol_store, rug_analyzer, token_monitor_store
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +167,20 @@ def sync_from_config(seeds: list | None = None) -> dict[str, int]:
 # --- Snapshot construction (pure REUSE of existing outputs) ------------------
 
 
+def _privilege_signature(priv) -> str | None:
+    """Compact, comparable signature of a contract's retained privileges, or None
+    when they couldn't be read (unverified / no ABI). Reuses the M11
+    `ContractPrivileges` verbatim — no new analysis, just a stable string so a flip
+    in what the dev can still do is detectable as a change."""
+    if priv is None or not getattr(priv, "analyzed", False):
+        return None
+    return (
+        f"mint={int(priv.can_mint)},pause={int(priv.can_pause)},"
+        f"blacklist={int(priv.can_blacklist)},fees={int(priv.can_set_fees)},"
+        f"renounced={priv.ownership_renounced}"
+    )
+
+
 async def _build_snapshot(entry: TokenWatchEntry) -> MonitorSnapshot:
     """Run the reused pipeline once and copy its scalars into a snapshot.
 
@@ -187,6 +201,10 @@ async def _build_snapshot(entry: TokenWatchEntry) -> MonitorSnapshot:
         risk_level=analysis.analysis.risk_level,
         honeypot_status=analysis.honeypot.status if analysis.honeypot else None,
         liquidity_usd=liquidity_usd,
+        # M27 alert sources — verbatim copies from the reused analysis, no recompute.
+        top10_concentration=analysis.holders.top10_percentage if analysis.holders else None,
+        smart_wallet_count=len(analysis.watchlist_hits),
+        privilege_signature=_privilege_signature(analysis.contract_privileges),
     )
 
     # OPTIONAL KOL linkage: reuse the already-correlated ProjectIntelligence. No
@@ -215,6 +233,9 @@ _FIELD_EVENT = {
     "kol_score": "kol_changed",
     "cluster_size": "cluster_changed",
     "alpha_score": "alpha_changed",
+    "top10_concentration": "concentration_changed",
+    "smart_wallet_count": "smart_wallet_changed",
+    "privilege_signature": "privilege_changed",
 }
 
 
@@ -231,7 +252,12 @@ def _is_meaningful_change(field: str, prev, curr, opts: MonitorOptions) -> bool:
         if prev == 0:
             return curr != 0
         return abs(float(curr) - float(prev)) / abs(float(prev)) >= float(opts.min_liquidity_change_pct)
-    # risk_level, honeypot_status, cluster_size: any difference counts.
+    if field == "top10_concentration":
+        # Percentage POINTS move (top10 is already a 0..100 percentage), guarded by
+        # the same knob as risk so tiny holder jitter doesn't alert every cycle.
+        return abs(float(curr) - float(prev)) >= float(opts.min_concentration_delta)
+    # risk_level, honeypot_status, cluster_size, smart_wallet_count,
+    # privilege_signature: any difference counts.
     return prev != curr
 
 
@@ -354,7 +380,7 @@ async def run_cycle() -> MonitorCycleReport:
     async def _guarded(entry: TokenWatchEntry) -> MonitorResult:
         async with sem:
             try:
-                return await monitor_once(entry)
+                result = await monitor_once(entry)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # defensive: monitor_once shouldn't raise
@@ -364,6 +390,11 @@ async def run_cycle() -> MonitorCycleReport:
                     outcome="failed",
                     error=f"{type(exc).__name__}: {exc}",
                 )
+            # M27: connect this token's change events to the configurable alert
+            # engine. Additive + fully isolated (process_monitor_result never
+            # raises) and a no-op unless `alerts_enabled`; monitoring is unaffected.
+            alert_engine.process_monitor_result(result, entry)
+            return result
 
     results = await asyncio.gather(*(_guarded(e) for e in entries))
     report.results = list(results)

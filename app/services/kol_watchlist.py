@@ -25,7 +25,7 @@ import logging
 
 from app.core.config import settings
 from app.models.kol import FollowingSnapshot, KolEntry, KolSeed, WatchStatus
-from app.services import kol_crypto_pipeline, kol_intel_engine, kol_monitor, kol_store
+from app.services import alert_engine, kol_crypto_pipeline, kol_intel_engine, kol_monitor, kol_store
 from app.services.social import get_provider, is_supported
 from app.services.social.base import ProviderError
 
@@ -308,6 +308,15 @@ async def capture_following(handle: str, platform: str | None = None) -> Followi
         len(snapshot.accounts), platform, handle,
         len(diff.new_follows), len(diff.unfollows),
     )
+
+    # M27: connect newly-detected follows to the configurable alert engine.
+    # Additive, isolated (process_follow_events never raises), and a no-op unless
+    # `alerts_enabled`. Uses the follow events the diff already implies — no new
+    # event generation — so capture/analysis is unaffected either way.
+    if diff.new_follows:
+        alert_engine.process_follow_events(
+            platform, handle, [e for e in diff.events() if e.event_type == "new_follow"]
+        )
 
     # Deliverable D: automatically classify each NEW follow and, for confident crypto
     # projects, run the existing rug analyzer on any contracts on their profile. Only

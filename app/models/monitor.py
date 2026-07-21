@@ -45,6 +45,9 @@ MONITOR_EVENT_TYPES: frozenset[str] = frozenset(
         "honeypot_changed",          # honeypot/sell-tax status flipped
         "kol_changed",               # KOL Intelligence Score moved
         "cluster_changed",           # distinct-KOL cluster size moved
+        "concentration_changed",     # top-10 holder concentration moved (M27 alert source)
+        "smart_wallet_changed",      # smart/insider wallet count on the token moved (M27)
+        "privilege_changed",         # contract privilege/authority signature moved (M27)
     }
 )
 
@@ -74,6 +77,10 @@ class MonitorOptions(BaseModel):
     # Minimum FRACTIONAL change in pool liquidity (USD) to count, e.g. 0.10 = 10%.
     # Guards against constant float jitter producing an event every cycle.
     min_liquidity_change_pct: float = 0.10
+    # Minimum change in top-10 holder concentration (percentage POINTS) to count
+    # as a move (M27). top10 is a 0..100 percentage, so this is an absolute-points
+    # threshold, guarding against holder-list jitter.
+    min_concentration_delta: float = 5.0
     # OPTIONAL linkage to an already-correlated KOL project account (M23). KOL
     # intelligence is keyed by social account, not contract; there is no reverse
     # index from a contract to a project. Rather than invent one, monitoring lets
@@ -145,6 +152,18 @@ class MonitorSnapshot(BaseModel):
     # From the reused analysis correlation; None today (no alpha scorer exists),
     # but tracked so the engine detects a move the moment one is wired upstream.
     alpha_score: int | None = None
+    # M27 alert sources — every field is copied VERBATIM from the reused analysis
+    # (HolderDistribution / watchlist_hits / ContractPrivileges); nothing recomputed.
+    # From TokenAnalysisResponse.holders.top10_percentage.
+    top10_concentration: float | None = None
+    # Count of smart/insider watchlisted wallets flagged on the token
+    # (len(TokenAnalysisResponse.watchlist_hits)).
+    smart_wallet_count: int | None = None
+    # A compact, comparable signature of the contract's retained privileges
+    # (mint/pause/blacklist/fees + ownership state) — so a flip in what the dev can
+    # still do surfaces as a change. Built by the engine from ContractPrivileges;
+    # None when the contract was unverified / privileges couldn't be read.
+    privilege_signature: str | None = None
 
     def tracked_values(self) -> dict:
         """The comparable field map used for diffing (excludes identity/time)."""
@@ -156,6 +175,9 @@ class MonitorSnapshot(BaseModel):
             "kol_score": self.kol_score,
             "cluster_size": self.cluster_size,
             "alpha_score": self.alpha_score,
+            "top10_concentration": self.top10_concentration,
+            "smart_wallet_count": self.smart_wallet_count,
+            "privilege_signature": self.privilege_signature,
         }
 
 

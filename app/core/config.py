@@ -494,6 +494,37 @@ class Settings(BaseSettings):
     kol_scheduler_retry_attempts: int = 2
     kol_scheduler_retry_backoff_seconds: float = 2.0
 
+    # --- Watchlist Alerts & Intelligent Notifications (M27) ------------------
+    # Master switch for the alert engine. Off by default — like every engine here
+    # it is opt-in and adds ZERO overhead when off (the producers early-return
+    # before evaluating). The alert engine only CONNECTS existing events to rules;
+    # it generates no intelligence and duplicates no transport (delivery goes
+    # through the M23-H/M26 notification providers). Independent of `notify_enabled`
+    # only in intent: an alert is still delivered through a provider, so an operator
+    # typically enables both. `notify_providers` selects the destinations.
+    alerts_enabled: bool = False
+    # Default cooldown (seconds) between two alerts of the same type for the same
+    # subject. Suppresses a flapping signal from spamming. A per-rule cooldown
+    # overrides this. <= 0 disables cooldown (dedupe still applies).
+    alerts_cooldown_seconds: int = 3600
+    # Only deliver alerts at/above this severity (one of alerts.SEVERITY_LEVELS:
+    # critical > high > medium > low > info). "info" delivers everything.
+    alerts_min_severity: str = "info"
+    # When True, multiple alerts for one subject in a single evaluation collapse
+    # into ONE aggregated alert (strongest severity, message lists each). When
+    # False, each change is its own alert.
+    alerts_aggregate: bool = True
+    # Global per-alert-type rule overrides, keyed by alert type (see
+    # models/alerts.ALERT_TYPES). Each value is a partial AlertRule dict, e.g.
+    #   {"liquidity_drop": {"severity": "critical", "cooldown_seconds": 600},
+    #    "new_kol_follow": {"enabled": false}}
+    # Unspecified types use the built-in default severity + `alerts_cooldown_seconds`.
+    alerts_rules: dict[str, dict] = {}
+    # Per-token overrides, keyed by lowercased contract address, then alert type.
+    # Precedence: per-token > global rule > built-in default. Same partial-dict
+    # shape as `alerts_rules`, e.g. {"0xabc...": {"risk_change": {"enabled": false}}}.
+    alerts_token_overrides: dict[str, dict] = {}
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

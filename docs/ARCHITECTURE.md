@@ -76,6 +76,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Chain Abstraction (M22)** | `core/chains.py` | `ChainConfig` (identity + endpoints + Uniswap-v3 DEX topology) built live from `settings` via a slug registry; services read `chains.active()` instead of chain-specific `settings.*`. One chain registered (Robinhood, default); architectural only — no behaviour change. |
 | **Scheduler** | `main.py` lifespan | Three asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`, `_kol_scheduler_loop`), each enable-flag gated. M25 added the KOL capture scheduler (`kol_scheduler`). |
 | **Notification Layer** | `notifications.py` (Deliverable H + M26 transports) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers. Sinks: `log`, `memory`, and the M26 HTTP transports `webhook` / `telegram` / `discord`. Opt-in, rule-filtered, retried, deduped, failure-isolated. See §6.1. |
+| **Alert Engine (M27)** | `alert_engine.py`, `models/alerts.py` | Connects existing events (`MonitorEvent`, `FollowEvent`, `KolIntelEvent`) to ten configurable alert types (per-alert + per-token rules, severity, cooldown, dedupe, aggregation, human-readable messages); delivers survivors through the reused notification providers. No new intelligence/events. Opt-in (`alerts_enabled`). See §6.2. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
 
 See [§17](#17-mermaid-diagrams) for the overall architecture diagram.
@@ -480,6 +481,35 @@ analysis, no event creation — it only reads the already-computed
   a replayed event is never delivered twice to the same destination; a prior
   `failed` attempt may still be retried.
 
+### 6.2 Alert engine (M27)
+
+`services/alert_engine.py` is the rule layer between the event producers and the
+notification providers. It CONNECTS existing events to configurable alerts; it
+generates no intelligence and no events, and duplicates no transport code
+(delivery goes through `notifications.deliver`, §6.1).
+
+- **Sources (reused verbatim):** token-monitor `MonitorEvent`s (M24) and KOL
+  `FollowEvent`s (M23) — each already carries `event_type` + a self-describing
+  `payload`. `EVENT_TO_ALERT` maps each event type to one of the ten alert types
+  (`models/alerts.ALERT_TYPES`): new_kol_follow, kol_cluster, risk_change,
+  alpha_change, liquidity_drop, concentration_change, smart_wallet_activity,
+  new_watchlist_token, honeypot_change, privilege_change.
+- **Rules (config):** `AlertConfig` merges per-token overrides onto global rules
+  onto built-in defaults (`rule_for` precedence: per-token > global > default).
+  Each `AlertRule` sets enabled / severity / cooldown. `alerts_min_severity` gates
+  which severities deliver; `alerts_aggregate` collapses several alerts for one
+  subject into a single summary (strongest severity).
+- **`evaluate(events, subject, …)`** is pure (events → `Alert`s, no I/O).
+  **`dispatch(alerts)`** applies cooldown (computed from the persisted delivery
+  log, so it survives restart) + dedupe, then delivers each `Alert` as a
+  `Notification` through every configured provider. Both never raise.
+- **Wiring:** `process_monitor_result` (called per-token inside
+  `token_monitor.run_cycle`) and `process_follow_events` (called from
+  `kol_watchlist.capture_following` on new follows) — additive, isolated, and a
+  no-op unless `alerts_enabled`. The concentration / smart-wallet / privilege alert
+  types are fed by three fields `MonitorSnapshot` now copies verbatim from the
+  reused analysis (no new computation).
+
 ### Future extension points
 
 - **New transports:** add a `NotificationProvider` subclass + registry entry (see §6.1). The layer, rules, dedupe, and audit log are already in place.
@@ -593,6 +623,7 @@ behavior is tuned without touching logic.
 | **KOL correlation** | Momentum + retention | `kol_momentum_min_new_kols=1`, `kol_intel_min_actionable_score=40`, `kol_intel_history_retain=200` |
 | **Notifications (H)** | Delivery + forwarding rules | `notify_enabled=False`, `notify_providers=["log"]`, `notify_min_score=0`, `notify_min_confidence="very_low"`, `notify_min_cluster_size=0`, `notify_event_types=[cluster, high_conviction, momentum]` |
 | **Notification transports (M26)** | Real HTTP sinks + retry (all optional, inert unless opted in) | `notify_retry_count=1`, `notify_retry_delay_seconds=1.0`, `notify_request_timeout_seconds=10.0`, `notify_webhook_url`, `notify_webhook_headers`, `notify_webhook_secret`, `notify_telegram_bot_token`, `notify_telegram_chat_id`, `notify_discord_webhook_url` |
+| **Alert engine (M27)** | Event→alert rules (opt-in, inert when off) | `alerts_enabled=False`, `alerts_cooldown_seconds=3600`, `alerts_min_severity="info"`, `alerts_aggregate=True`, `alerts_rules` (per-type overrides), `alerts_token_overrides` (per-token) |
 | **Token monitor (M24)** | Background re-analysis scheduler | `token_monitor_enabled=False`, `token_monitor_interval_seconds=900`, `token_monitor_concurrency=3`, `token_monitor_timeout_seconds=120`, `token_monitor_retry_*`, `token_monitor_seed` |
 | **KOL scheduler (M25)** | Background KOL capture scheduler | `kol_scheduler_enabled=False`, `kol_scheduler_interval_seconds=3600`, `kol_scheduler_concurrency=2`, `kol_scheduler_timeout_seconds=180`, `kol_scheduler_retry_attempts=2`, `kol_scheduler_retry_backoff_seconds=2.0` |
 | **LLM (optional)** | Richer lore summaries | `llm_api_key`, `llm_base_url`, `llm_model` (empty = extractive fallback) |
@@ -932,10 +963,11 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M22 — Multi-chain architecture (abstraction only) | Done | `core/chains.py` (`ChainConfig` model + slug→builder registry + `active()`); services read chain identity/endpoints/DEX topology from `chains.active()` instead of `settings` directly; `settings.default_chain` selects the active chain. Robinhood Chain is the sole registered chain, built live from `settings` — zero behaviour change. No new chains, no new APIs. |
 | M25 — KOL Intelligence Automation | Done | `kol_scheduler` (`capture_one` timeout+retry/backoff, `run_cycle` bounded-concurrency sweep, duplicate-run lock); `main.py` `_kol_scheduler_loop` (enable-gated). Orchestration only — reuses `kol_watchlist.capture_following` wholesale (fetch→diff→crypto→score→cluster→events unchanged) |
 | M26 — Notification transport layer | Done | `notifications.py` gains three HTTP transports (`WebhookProvider` incl. optional HMAC signature, `TelegramProvider`, `DiscordWebhookProvider`) + shared retry/backoff in `_deliver_one`; all plug into the existing M23-H registry/dispatcher/dedupe. Infra only — no new intelligence; providers know nothing of KOL/scoring/clustering, they just ship a ready-made `Notification` |
+| M27 — Watchlist Alerts & Intelligent Notifications | Done | `models/alerts.py` (10 alert types, rules, per-token overrides) + `alert_engine.py` (event→alert mapping, severity/cooldown/dedupe/aggregation, human-readable messages); delivers via reused `notifications.deliver`. Wired into `token_monitor.run_cycle` + `kol_watchlist.capture_following`. Connects existing events to rules — no new intelligence/events/scoring |
 
 **Not yet built:** any **second chain** — M22 shipped the abstraction
 (`core/chains.py`), but only Robinhood Chain is registered. All milestones
-through M26 are implemented. See §16.
+through M27 are implemented. See §16.
 
 ---
 

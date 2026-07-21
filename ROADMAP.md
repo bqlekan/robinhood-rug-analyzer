@@ -1203,6 +1203,68 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### M27 — Watchlist Alerts & Intelligent Notifications (events → configurable rules → delivery) ✅ COMPLETE
+
+- **Goal:** Turn the events the system already produces into **configurable alerts**. The token-monitor
+  (M24) emits change events but never delivered them; KOL follow events (M23) were likewise produced but
+  never delivered. M27 adds a rule engine that decides *whether* an existing event should notify — per
+  alert type, per token, with cooldown / dedupe / severity / aggregation — and delivers the survivors
+  through the EXISTING notification providers (M23-H/M26). No new intelligence, no scoring change.
+- **Why it matters:** M24/M25 made the analyzer watch continuously and M26 gave it real transports, but
+  nothing connected the *watchlist* change stream to those transports, and every alert would have been
+  all-or-nothing. Operators need to say "critical honeypot flips always, risk wobble never, and not more
+  than once an hour per token." That policy layer is M27.
+- **Design rule (non-negotiable):** the engine **connects, never regenerates.** It consumes the existing
+  `MonitorEvent` / `FollowEvent` / `KolIntelEvent` objects verbatim (each already carries `event_type` +
+  a self-describing `payload`), maps each to one of ten alert types, applies the rule, renders a
+  human-readable message, and hands a `Notification` to `notifications.deliver` — the ONE delivery path
+  (providers + retry + dedupe + audit), so no transport code is duplicated. No scoring, detection,
+  clustering, or event-generation logic is touched.
+- **Status:** ✅ **COMPLETE** (2026-07-21).
+  _As built:_ `app/models/alerts.py` — the ten-type `ALERT_TYPES` vocabulary, `SEVERITY_LEVELS`
+  (critical→info), `AlertRule` (enabled / severity / cooldown), `AlertConfig` (global defaults +
+  per-token overrides with `rule_for` precedence per-token > global > built-in), and the rendered
+  `Alert`. `app/services/alert_engine.py` — `EVENT_TO_ALERT` maps each existing event type to an alert
+  type; `evaluate(events, subject, …)` is pure (event→alert with enable + severity-gate + per-token
+  override + optional aggregation into one summary alert); `dispatch(alerts)` applies cooldown (via the
+  persisted delivery log, so it survives restart) + dedupe and delivers through the reused providers;
+  `process_monitor_result` / `process_follow_events` are the additive, never-raising wiring hooks. To
+  give the concentration / smart-wallet / privilege alert types a live source, `MonitorSnapshot` gained
+  three fields copied VERBATIM from the reused analysis (`top10_concentration`, `smart_wallet_count`,
+  `privilege_signature`) + their change events — no new computation. `notifications.py` was refactored to
+  expose one generic `deliver(notification, name)` (the KOL path now delegates to it) so the alert engine
+  reuses the exact retry/dedupe/audit machinery. Wired into `token_monitor.run_cycle` (per-token, isolated)
+  and `kol_watchlist.capture_following` (new follows). Everything gated by `settings.alerts_enabled`
+  (**off by default**, zero overhead when off). Covered by `tests/test_alert_engine.py` (20 tests:
+  event→alert mapping incl. the three new monitor sources, new-KOL-follow via FollowEvent, non-alertable
+  events skipped, global disable, per-token override beats global, per-token severity raise, severity gate,
+  dedupe, cooldown suppress + cooldown-zero repeats, aggregation on/off, disabled no-op, monitor-result
+  wiring, bad-provider isolation, no-providers no-op).
+- **Files/modules (new):** `app/models/alerts.py`, `app/services/alert_engine.py`,
+  `tests/test_alert_engine.py`. **Touched additively:** `app/core/config.py` (`alerts_*` block),
+  `app/models/monitor.py` (+3 reused-scalar fields + 3 event types), `app/services/token_monitor.py`
+  (populate the 3 fields + a gated alert call in the cycle), `app/services/kol_watchlist.py` (a gated
+  alert call on new follows), `app/services/notifications.py` (extract the generic `deliver` — behaviour
+  identical, the KOL path delegates). Scoring, detection, clustering, the event pipeline, all APIs, and
+  the frontend are **untouched.**
+- **Integration points:** (1) existing event producers (`MonitorEvent`, `FollowEvent`) — consumed verbatim;
+  (2) `notifications.deliver` + providers — the reused delivery path; (3) `kol_store` delivery log — reused
+  for dedupe + cooldown; (4) pydantic `BaseSettings` for all rule config.
+- **Dependencies:** M23-H/M26 (notification providers), M24 (token-monitor events), M23 (follow events).
+  **No new external dependency.**
+- **Effort:** Medium (rule engine + config + wiring; zero new intelligence) · **Risk:** Low (additive; off
+  by default; the delivery layer + producers ship behaviourally unchanged).
+- **Expected improvement:** Makes continuous monitoring *actionable* — the watchlist change stream and new
+  KOL follows now reach webhook/Telegram/Discord under operator-tuned rules, instead of dying as internal
+  events. Infrastructure-only; no detection change.
+- **Acceptance criteria:** each of the ten alert types is configurable (enable/disable, severity, cooldown)
+  with per-token overrides beating global defaults; existing events drive alerts with no new event
+  generation; cooldown + dedupe suppress repeats; multiple alerts aggregate; messages are human-readable;
+  one bad provider never blocks the others; the engine is opt-in and zero-overhead when disabled;
+  **existing tests stay green (zero regression — 497 → 517).**
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.
