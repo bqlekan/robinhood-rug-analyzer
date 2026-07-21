@@ -804,7 +804,7 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M23 — KOL Intelligence: X (Twitter) follow-graph monitoring → analysis pipeline
+### M23 — KOL Intelligence: X (Twitter) follow-graph monitoring → analysis pipeline ✅ COMPLETE
 
 - **Goal:** Detect when tracked KOLs (key opinion leaders) follow **new** X accounts, extract any
   crypto project/contract references from those newly-followed accounts, run them through the
