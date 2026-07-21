@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.core.config import settings
 from app.core.logging_config import configure_logging
-from app.services import http, token_monitor, wallet_intel
+from app.services import http, kol_scheduler, kol_watchlist, token_monitor, wallet_intel
 
 # On Windows, StaticFiles derives Content-Type from the system registry, which often
 # maps .css/.js to text/plain. Browsers then refuse to apply the stylesheet, leaving an
@@ -66,6 +66,32 @@ async def _token_monitor_loop() -> None:
             logger.warning("Token monitor cycle failed: %s", exc)
 
 
+async def _kol_scheduler_loop() -> None:
+    """Periodically capture follows from the enabled KOL roster and run the reused
+    M23 pipeline over what changed (M25).
+
+    Interval-gated to respect the X scraping/rate budget. Opt-in: this loop only
+    starts when KOL_SCHEDULER_ENABLED is set. A single cycle can never kill the
+    loop — run_cycle is failure-isolated and this guards it a second time.
+    """
+    # Reconcile any config-driven seed roster once at startup.
+    try:
+        kol_watchlist.sync_from_config()
+    except Exception as exc:  # seeding must never block the loop starting
+        logger.warning("KOL scheduler seed sync failed: %s", exc)
+    while True:
+        await asyncio.sleep(settings.kol_scheduler_interval_seconds)
+        try:
+            report = await kol_scheduler.run_cycle()
+            if report.captured or report.failed:
+                logger.info(
+                    "KOL scheduler cycle: captured=%s failed=%s",
+                    report.captured, report.failed,
+                )
+        except Exception as exc:  # never let the loop die
+            logger.warning("KOL scheduler cycle failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     tasks: list[asyncio.Task] = []
@@ -73,6 +99,8 @@ async def lifespan(_: FastAPI):
         tasks.append(asyncio.create_task(_watchlist_refresh_loop()))
     if settings.token_monitor_enabled:
         tasks.append(asyncio.create_task(_token_monitor_loop()))
+    if settings.kol_scheduler_enabled:
+        tasks.append(asyncio.create_task(_kol_scheduler_loop()))
     try:
         yield
     finally:

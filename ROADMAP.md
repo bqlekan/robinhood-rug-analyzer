@@ -1081,6 +1081,69 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### M25 — KOL Intelligence Automation (scheduler that drives the M23 pipeline) ✅ COMPLETE
+
+- **Goal:** Turn the wired-but-manual M23 KOL pipeline into a continuously running engine: on a
+  schedule, capture the following list of every **enabled** KOL and let the existing pipeline
+  (snapshot → diff → crypto detection → scoring → clustering → events) run over what changed —
+  with no human invoking `capture_following` per KOL. This is the missing driver the docs flagged
+  as "the natural next `lifespan` task."
+- **Why it matters:** Every M23 deliverable (A–H) shipped, but nothing called `capture_following`
+  on a cadence, so the leading social signal only moved when someone triggered it by hand. A
+  follow-graph signal is only "leading" if it's captured continuously; automation is what makes the
+  convergence/cluster events actually fire in time to matter.
+- **Design rule (non-negotiable):** the scheduler **orchestrates, never reimplements.** A cycle is
+  just "list enabled KOLs → `kol_watchlist.capture_following` each", which already chains the whole
+  pipeline. There is **no** capture, diff, detection, scoring, clustering, or event logic in this
+  milestone — only orchestration (interval, bounded concurrency, per-KOL timeout + retry/backoff,
+  failure isolation, duplicate-run prevention, progress logging, graceful shutdown). Resume-after-
+  restart is **free**: all state (snapshots, `sync_meta`, followed accounts) already lives in
+  `kol_store`, so a fresh process just resumes iterating the persisted roster and diffs against the
+  last persisted snapshot.
+- **Status:** ✅ **COMPLETE** (2026-07-21).
+  _As built:_ new `app/services/kol_scheduler.py` — `capture_one(entry)` wraps a single
+  `capture_following` call with a per-KOL timeout (`asyncio.wait_for`) and a retry/backoff loop that
+  honours `ProviderError.retryable` (a non-retryable error — suspended/private — stops early; a
+  missing/incapable provider is a permanent `skipped`, not a burned retry; an incomplete/partial pull
+  is a retryable non-success that preserves the prior baseline). `run_cycle()` sweeps the
+  **enabled-only** roster (`kol_watchlist.list_kols(enabled_only=True)`) under an
+  `asyncio.Semaphore(kol_scheduler_concurrency)`, each KOL isolated (one failure/hang affects only its
+  own result), and is guarded by a process-level `asyncio.Lock` so a cycle that overruns the interval
+  **declines the next tick** rather than overlapping it (returns `skipped_cycle=True`). Both return
+  plain dataclass reports (`KolCaptureResult` / `KolCycleReport`) — no new persisted model, since the
+  pipeline already persists everything. Scheduling reuses the `app/main.py` `asyncio.create_task`
+  background-loop pattern next to `_token_monitor_loop` (`_kol_scheduler_loop`, `kol_watchlist.sync_from_config`
+  once at startup then interval-gates `run_cycle`), gated by `settings.kol_scheduler_enabled`
+  (**off by default**). Graceful shutdown reuses the existing lifespan cancel/suppress path; the
+  scheduler re-raises `CancelledError` so a shutdown mid-capture cancels cleanly. All cadence/
+  concurrency/timeout/retry knobs are config (`kol_scheduler_*` block). Covered by
+  `tests/test_kol_scheduler.py` (12 tests: enabled-only + tier order, bounded concurrency actually
+  caps parallelism, one KOL failing/hanging never sinks the cycle, retry-then-succeed + backoff,
+  non-retryable stops early, incomplete-vs-failed outcome, missing/incapable provider skipped without
+  retry, duplicate-run lock declines the overlapping tick, empty roster no-op, graceful cancellation).
+- **Files/modules (new, additive):** `app/services/kol_scheduler.py`, `tests/test_kol_scheduler.py`.
+  **Touched minimally & additively:** `app/core/config.py` (new `kol_scheduler_*` settings block),
+  `app/main.py` (register `_kol_scheduler_loop` next to the existing loops, guarded by the enable flag).
+  `kol_watchlist`, the X provider, `kol_monitor`, the crypto pipeline, `kol_intel_engine`, scoring,
+  the event pipeline, all APIs, and the frontend are **consumed/untouched, not modified.**
+- **Integration points:** (1) `kol_watchlist.capture_following()` — the single reuse seam for the whole
+  KOL pipeline; (2) `kol_watchlist.list_kols(enabled_only=True)` — the roster read; (3) the
+  `SocialGraphProvider` registry (`get_provider`) for the capture-capability skip check;
+  (4) the `main.py` `asyncio.create_task` background-loop + lifespan cancel pattern (no new scheduler
+  dependency); (5) pydantic `BaseSettings` for all config.
+- **Dependencies:** M23 (A–H, the pipeline being driven). **No new external dependency.**
+- **Effort:** Small–Medium (pure orchestration; zero new pipeline logic) · **Risk:** Low (additive;
+  off by default; the driven pipeline ships unmodified).
+- **Expected improvement:** Makes the M23 leading-social signal **continuous** rather than manual —
+  the precondition for cluster/convergence events firing early enough to be actionable. Additive-only.
+- **Acceptance criteria:** an enabled roster is captured on a cadence with the whole pipeline running
+  per KOL; disabled KOLs are skipped; one KOL's failure/timeout is isolated and retried, never sinking
+  the cycle or the loop; concurrency is bounded; a still-running cycle is never double-started; the loop
+  is opt-in and off by default; state persists so a restart resumes cleanly; **existing tests stay green
+  (zero regression — 472 → 484).**
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.

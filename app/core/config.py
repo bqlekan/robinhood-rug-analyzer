@@ -434,6 +434,32 @@ class Settings(BaseSettings):
     # address string or {address, label?, enabled?, options?}.
     token_monitor_seed: list = []
 
+    # --- KOL Intelligence Automation (M25) ----------------------------------
+    # Master switch for the background KOL capture scheduler. Off by default —
+    # like every other engine here it is opt-in and does NO background work
+    # until enabled. When off, the KOL watchlist + `capture_following` still
+    # work on demand; only the periodic scheduler stays dormant. Independent of
+    # `kol_intel_enabled` (which gates the pipeline internals) so the loop can be
+    # toggled without touching pipeline behaviour.
+    kol_scheduler_enabled: bool = False
+    # Scheduler cadence. The loop wakes every `interval_seconds` and captures the
+    # enabled KOL roster once. Configurable so operators trade freshness for the
+    # scraping/rate budget the X provider consumes.
+    kol_scheduler_interval_seconds: int = 3600
+    # Concurrency limit: how many KOLs are captured in parallel within one cycle.
+    # Kept low by default — X scraping is heavier and more rate-sensitive than the
+    # REST analyzer, so a small fan-out avoids tripping rate limits. Must be >= 1.
+    kol_scheduler_concurrency: int = 2
+    # Per-KOL capture timeout (seconds). A single KOL whose capture hangs can never
+    # stall the whole cycle — it is abandoned after this budget and treated as a
+    # (retryable) failure. X scraping can be slow, so this is generous.
+    kol_scheduler_timeout_seconds: int = 180
+    # Retry policy for a KOL whose capture fails (provider error or timeout).
+    # `attempts` is the total tries per KOL per cycle (1 = no retry); `backoff_seconds`
+    # is the base delay between tries, multiplied by the attempt number.
+    kol_scheduler_retry_attempts: int = 2
+    kol_scheduler_retry_backoff_seconds: float = 2.0
+
     # Optional: plug in a free/cheap LLM key later for richer lore summaries.
     # When empty, lore falls back to extractive themes + heuristic sentiment.
     llm_api_key: str = ""

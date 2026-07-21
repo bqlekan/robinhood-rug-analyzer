@@ -144,6 +144,30 @@ sequenceDiagram
 - **Best-effort** — the crypto and intel stages are wrapped in try/except and swallowed; a failure there never sinks a capture that already succeeded.
 - **Internal-only** — the flow ends at persisted engine-internal events. Delivery (notification) and AI reasoning are planned, not built.
 
+### Automating Path B (M25)
+
+Path B above traces **one** `capture_following` call. In production that call is
+driven by the **KOL scheduler** (`app/services/kol_scheduler.py`, run by
+`main.py`'s `_kol_scheduler_loop`, gated by `kol_scheduler_enabled`), so no human
+has to trigger captures:
+
+```text
+_kol_scheduler_loop (every kol_scheduler_interval_seconds)
+  ↓
+kol_scheduler.run_cycle()          → declines if a prior cycle still holds the lock
+  ↓ list enabled KOLs (kol_watchlist.list_kols(enabled_only=True); disabled skipped)
+  ↓ bounded fan-out (asyncio.Semaphore, kol_scheduler_concurrency)
+capture_one(entry)  per KOL        → skip if no capture-capable provider
+  ↓ asyncio.wait_for(timeout) + retry/backoff (retryable ProviderError / timeout only)
+kol_watchlist.capture_following(…) → the ENTIRE Path B above, unchanged
+```
+
+The scheduler owns **only** orchestration — it adds no intelligence logic. Each
+KOL is isolated (one failure/hang never sinks the cycle; a cycle never kills the
+loop), and **resume-after-restart is free**: all state (snapshots, `sync_meta`,
+followed accounts) already lives in `kol_store`, so a fresh process just resumes
+iterating the persisted roster and diffs against the last persisted snapshot.
+
 ---
 
 ## Where caching vs persistence sits

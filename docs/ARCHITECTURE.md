@@ -74,7 +74,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Persistence Layer** | `watchlist_store` (wallets), `kol_store` (KOL) | Two independent stdlib-`sqlite3` stores, each lock-guarded. |
 | **Configuration System** | `core/config.py` | One pydantic `BaseSettings`; every threshold/weight/toggle is env-overridable config. |
 | **Chain Abstraction (M22)** | `core/chains.py` | `ChainConfig` (identity + endpoints + Uniswap-v3 DEX topology) built live from `settings` via a slug registry; services read `chains.active()` instead of chain-specific `settings.*`. One chain registered (Robinhood, default); architectural only — no behaviour change. |
-| **Scheduler** | `main.py` lifespan | Two asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`), each enable-flag gated. KOL captures have no scheduler yet. |
+| **Scheduler** | `main.py` lifespan | Three asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`, `_kol_scheduler_loop`), each enable-flag gated. M25 added the KOL capture scheduler (`kol_scheduler`). |
 | **Notification Layer** | `notifications.py` (Deliverable H) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers (`log`, `memory`). Opt-in, rule-filtered, deduped, failure-isolated. See §6.1. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
 
@@ -582,6 +582,8 @@ behavior is tuned without touching logic.
 | **KOL clustering** | Convergence windows | `kol_cluster_min_kols=2`, `kol_cluster_window_hours=72`, `kol_cluster_rapid_*`, `kol_cluster_tier1_min`, `kol_cluster_high_conviction_score=75` |
 | **KOL correlation** | Momentum + retention | `kol_momentum_min_new_kols=1`, `kol_intel_min_actionable_score=40`, `kol_intel_history_retain=200` |
 | **Notifications (H)** | Delivery + forwarding rules | `notify_enabled=False`, `notify_providers=["log"]`, `notify_min_score=0`, `notify_min_confidence="very_low"`, `notify_min_cluster_size=0`, `notify_event_types=[cluster, high_conviction, momentum]` |
+| **Token monitor (M24)** | Background re-analysis scheduler | `token_monitor_enabled=False`, `token_monitor_interval_seconds=900`, `token_monitor_concurrency=3`, `token_monitor_timeout_seconds=120`, `token_monitor_retry_*`, `token_monitor_seed` |
+| **KOL scheduler (M25)** | Background KOL capture scheduler | `kol_scheduler_enabled=False`, `kol_scheduler_interval_seconds=3600`, `kol_scheduler_concurrency=2`, `kol_scheduler_timeout_seconds=180`, `kol_scheduler_retry_attempts=2`, `kol_scheduler_retry_backoff_seconds=2.0` |
 | **LLM (optional)** | Richer lore summaries | `llm_api_key`, `llm_base_url`, `llm_model` (empty = extractive fallback) |
 
 ### Defaults and safety
@@ -917,11 +919,11 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M23-H — Alert pipeline (transport-agnostic) | Done | `notifications.py` (`NotificationProvider` ABC, `log`/`memory` sinks, rule-filtered + deduped delivery log); consumes engine events |
 | M24 — Token Watchlist & Monitoring Engine | Done | `models/monitor.py`, `token_monitor_store` (own DB), `token_monitor` (watchlist CRUD + `run_cycle` re-analysis + change detection), `main.py` `_token_monitor_loop` (enable-gated) |
 | M22 — Multi-chain architecture (abstraction only) | Done | `core/chains.py` (`ChainConfig` model + slug→builder registry + `active()`); services read chain identity/endpoints/DEX topology from `chains.active()` instead of `settings` directly; `settings.default_chain` selects the active chain. Robinhood Chain is the sole registered chain, built live from `settings` — zero behaviour change. No new chains, no new APIs. |
+| M25 — KOL Intelligence Automation | Done | `kol_scheduler` (`capture_one` timeout+retry/backoff, `run_cycle` bounded-concurrency sweep, duplicate-run lock); `main.py` `_kol_scheduler_loop` (enable-gated). Orchestration only — reuses `kol_watchlist.capture_following` wholesale (fetch→diff→crypto→score→cluster→events unchanged) |
 
-**Not yet built:** the KOL *capture* scheduler (a `lifespan` loop driving
-`capture_following` on a cadence — see §16) and any **second chain** — M22
-shipped the abstraction (`core/chains.py`), but only Robinhood Chain is
-registered. All milestones through M24 are implemented. See §16.
+**Not yet built:** any **second chain** — M22 shipped the abstraction
+(`core/chains.py`), but only Robinhood Chain is registered. All milestones
+through M25 are implemented. See §16.
 
 ---
 
@@ -935,7 +937,6 @@ Documented honestly — none of this is hidden.
 - **Honeypot sim is inert** on any chain without a mapped router; only Robinhood Chain (Uniswap v3) is wired.
 
 ### Known limitations
-- **No KOL capture scheduler.** `capture_following` exists and is wired end-to-end, but nothing calls it on a cadence yet. Two background loops run today (`_watchlist_refresh_loop`, `_token_monitor_loop`); a KOL scheduler is the natural next `lifespan` task.
 - **No real notification transports.** M23-H shipped the publisher layer with `log`/`memory` sinks only; Telegram / Discord / webhook / UI adapters are not built, so alert-worthy events reach only logs and the in-process buffer.
 - **No DB migration framework.** Tables are `CREATE ... IF NOT EXISTS`; additive JSON columns are the only safe evolution today. A real schema change needs an explicit migration.
 - **`_prune_history` uses table-name string interpolation.** Safe because it is only ever called with internal constant table names, but it is not parameterized.
@@ -957,12 +958,17 @@ Documented honestly — none of this is hidden.
 Planned evolution. These describe intended shapes consistent with the current
 design — they are **not** implemented.
 
-### Watchlist Monitoring Engine
-A scheduler (a new `lifespan` background task, gated by `kol_intel_enabled`) that
-calls `capture_following` per enabled KOL on a cadence, using
-`ProviderError.retryable` / `retry_after_seconds` for back-off and respecting
-rate budgets. This is the missing driver that turns the wired-but-manual KOL
-pipeline into a continuously running engine.
+### KOL Capture Scheduler (M25) — **built**
+Shipped as `services/kol_scheduler.py` + the `_kol_scheduler_loop` `lifespan`
+task, gated by `kol_scheduler_enabled` (off by default). A cycle iterates the
+enabled KOL roster and calls `capture_following` per KOL with bounded
+concurrency, per-KOL timeout + retry/backoff (honouring `ProviderError.retryable`
+for permanent-vs-transient), failure isolation, and a duplicate-run guard so an
+overrunning cycle never overlaps the next tick. It orchestrates only — all
+intelligence (fetch → diff → crypto → scoring → clustering → events) stays in the
+unchanged M23 pipeline, and resume-after-restart is free because all state lives
+in `kol_store`. This is the driver that turns the wired-but-manual KOL pipeline
+into a continuously running engine.
 
 ### Notification Engine (Deliverable H) — **built**
 Shipped as `services/notifications.py` (§6.1): a `NotificationProvider` interface
