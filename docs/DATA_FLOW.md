@@ -249,3 +249,31 @@ exactly one chain is registered (Robinhood Chain, the default), built **live fro
 directly — this is purely the seam a future second chain would register against.
 Simulation *policy* (prober bytecode, buy amount, tax threshold) is chain-agnostic
 and stays in `settings`, not in `ChainConfig`.
+
+---
+
+## Frontend interaction flow (static UI, `frontend/app.js`)
+
+The UI is a thin same-origin client over the existing API — it adds **no** data or
+logic, only how a request is triggered and how progress/results are shown. A
+production-readiness polish pass (post-M27) wired every long-running action through
+one shared UX path:
+
+```text
+user action (submit / token click / recent-search chip)
+  ↓ per-action in-flight flag set  → duplicate clicks/submits ignored
+  ↓ button locked (disabled + "…") ; indeterminate progress bar + staged status
+  ↓ skeleton placeholders fill the results area
+fetch(/api/v1/… )                  → the SAME endpoint, unchanged request body
+  ↓ ok    → progress snaps to 100%, results render (fade-in), recent-search stored
+  ↓ error → progress stops, controls restored, clean message shown
+  ↓ finally → in-flight flag cleared, button restored
+```
+
+**Token navigation:** clicking a discovered token (ranked scanner row, or a Smart
+Wallet's recent-buy token) calls `analyzeAddress(contract)` — it reuses the contract
+the backend already returned (no extra lookup), switches to the Analyze tab, populates
+the field, and submits the normal `POST /api/v1/analyze`. External **Copy / Blockscout
+/ DexScreener** actions are built from the one-time `GET /api/v1/chain` read. **Recent
+searches** persist the last 10 analyzed contracts in `localStorage` (client-only). None
+of this touches the backend, scoring, or the API contract.

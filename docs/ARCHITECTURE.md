@@ -169,6 +169,23 @@ frontend; owns the lifespan-scoped background scheduler.
 - Extension: add a background loop as an `asyncio.create_task` in `lifespan`, guarded by an enable flag (this is where a future KOL capture scheduler lands).
 - Failure modes: the refresh loop wraps each cycle in try/except so it never dies; forces correct MIME types on Windows so the frontend never serves unstyled.
 
+**`frontend/` (static UI)** — plain HTML/CSS/JS served at `/`, no build step. `app.js`
+talks to `/api/v1/*` same-origin. A production-readiness polish pass (post-M27) added,
+**frontend-only** (no backend/API/scoring change):
+- **Token navigation:** every discovered token (ranked scanner + each Smart Wallet's
+  recent buys) is a clickable control that switches to Analyze, populates the contract,
+  auto-runs analysis, smooth-scrolls to results, and highlights the source. Reuses the
+  contract already returned — no extra request.
+- **Loading UX:** one shared indeterminate progress bar + staged status text for Analyze /
+  Scan / Wallet-load / Refresh (the API has no progress stream, so it snaps to 100% on
+  success); per-action in-flight flags + button locks prevent duplicate requests; failures
+  stop the bar, restore controls, and surface a clean message.
+- **Token actions:** Copy / Blockscout / DexScreener (new tab), built from `/api/v1/chain`.
+- **Recent searches:** last 10 analyzed contracts in `localStorage`, click to re-analyze.
+- **Skeletons + subtle transitions** (reduced-motion aware); **accessibility** (ARIA
+  tablist/roving tabindex, `aria-live` status, focus indicators); **mobile** stacking +
+  no horizontal overflow.
+
 **`app/api/routes.py`** — the v1 REST surface under `/api/v1`.
 - Public: `GET /chain`, `POST /analyze`, `POST /scan`, `GET /watchlist` (M21: `kind`/`sort` query params), `POST /watchlist/refresh` (M21: on-request refresh fallback for idle hosts), `GET /wallet/{address}`, `GET /history/{address}` (M19: stored trend snapshots).
 - Dependencies: `rug_analyzer`, `watchlist_store`, token models.

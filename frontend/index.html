@@ -18,37 +18,38 @@
       </p>
     </header>
 
-    <nav class="tabs">
-      <button class="tab active" data-tab="scan">Ranked Scanner</button>
-      <button class="tab" data-tab="analyze">Analyze a Token</button>
-      <button class="tab" data-tab="wallets">Smart Wallets</button>
+    <nav class="tabs" role="tablist" aria-label="Analyzer sections">
+      <button class="tab active" data-tab="scan" role="tab" id="tabbtn-scan" aria-selected="true" aria-controls="tab-scan">Ranked Scanner</button>
+      <button class="tab" data-tab="analyze" role="tab" id="tabbtn-analyze" aria-selected="false" aria-controls="tab-analyze" tabindex="-1">Analyze a Token</button>
+      <button class="tab" data-tab="wallets" role="tab" id="tabbtn-wallets" aria-selected="false" aria-controls="tab-wallets" tabindex="-1">Smart Wallets</button>
     </nav>
 
     <!-- Ranked scanner -->
-    <section id="tab-scan" class="tab-panel active">
+    <section id="tab-scan" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-scan">
       <form id="scan-form" class="controls">
         <label for="scan-limit">Tokens to scan</label>
         <input id="scan-limit" name="limit" type="number" min="1" max="50" value="10" />
         <label class="checkbox"><input id="scan-lore" type="checkbox" /> Include lore (slower)</label>
         <button type="submit">Scan &amp; Rank</button>
       </form>
-      <div id="scan-status" class="status">Run a scan to rank active Robinhood Chain tokens by risk.</div>
+      <div id="scan-status" class="status" role="status" aria-live="polite">Run a scan to rank active Robinhood Chain tokens by risk.</div>
       <div id="scan-results" class="ranked-list"></div>
     </section>
 
     <!-- Single token -->
-    <section id="tab-analyze" class="tab-panel">
+    <section id="tab-analyze" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-analyze">
       <form id="analyze-form" class="controls">
         <label for="contract-address">Token contract address</label>
         <input id="contract-address" name="contractAddress" type="text" placeholder="0x..." required />
         <label class="checkbox"><input id="analyze-lore" type="checkbox" checked /> Include lore</label>
         <button type="submit">Analyze</button>
       </form>
-      <div id="result" class="status">Enter a Robinhood Chain token contract address.</div>
+      <div id="recent-searches" class="recent-searches" hidden></div>
+      <div id="result" class="status" role="status" aria-live="polite">Enter a Robinhood Chain token contract address.</div>
     </section>
 
     <!-- Smart wallets watchlist -->
-    <section id="tab-wallets" class="tab-panel">
+    <section id="tab-wallets" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-wallets">
       <form id="wallets-form" class="controls">
         <label>On-chain wallet intelligence</label>
         <select id="wallets-kind" aria-label="Filter by wallet kind">
@@ -63,7 +64,7 @@
         <button type="submit">Load</button>
         <button type="button" id="wallets-refresh">Refresh from chain</button>
       </form>
-      <div id="wallets-note" class="status">
+      <div id="wallets-note" class="status" role="status" aria-live="polite">
         Smart-wallet scores are heuristic estimates from free on-chain behavior, not verified ROI.
         Analyze or scan tokens to populate the watchlist.
       </div>

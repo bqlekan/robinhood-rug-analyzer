@@ -1265,6 +1265,39 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### Production-readiness polish (frontend UX only — post-M27, pre-Frontend Roadmap) ✅ COMPLETE
+
+- **Goal:** A usability pass over the existing static UI before deployment. **No backend, scoring,
+  detection, alert/KOL/watchlist/notification/historical logic, or API changes** — frontend
+  (`frontend/index.html`, `app.js`, `styles.css`) only.
+- **Status:** ✅ **COMPLETE** (2026-07-21). _As built:_
+  - **Smart Wallet → Token navigation:** every discovered token (name + each wallet's recent buys)
+    is clickable → switches to the Analyze tab, populates the contract field, auto-starts analysis,
+    smooth-scrolls to the results, and highlights the source while it runs. Reuses the contract the
+    backend already returned — **no extra lookup.**
+  - **Universal loading experience:** a shared indeterminate progress bar + staged status text drives
+    Analyze, Ranked Scanner, Smart-Wallet load, and Watchlist refresh (the backend exposes no progress
+    stream, so the bar is a high-quality indeterminate one that snaps to 100% on success).
+  - **Duplicate-request prevention:** per-action in-flight flags + button lock ignore repeated
+    clicks/submits (including `requestSubmit()`), restoring controls on completion.
+  - **Better errors:** every failure stops the animation, re-enables controls, and shows a clean
+    human-readable message — the page never sticks loading.
+  - **Token actions:** Copy contract, Open Blockscout, Open DexScreener (new tab) per token, built from
+    the reused `/api/v1/chain` info.
+  - **Recent searches:** last 10 analyzed contracts persisted in `localStorage`, shown as chips that
+    re-analyze on click.
+  - **Skeleton loaders** for scan lists, wallet lists, and the analysis grid; **subtle transitions** for
+    tab switch, result appearance, and progress completion (respecting `prefers-reduced-motion`).
+  - **Accessibility:** ARIA `tablist`/`tab`/`tabpanel` roles + roving-tabindex keyboard nav, `aria-live`
+    status regions, visible focus indicators, obvious disabled buttons, labelled action buttons.
+  - **Mobile polish:** stacked controls, full-width buttons, scrollable long addresses, no horizontal
+    overflow.
+- **Files:** `frontend/index.html`, `frontend/app.js`, `frontend/styles.css`. **No Python touched.**
+- **Verification:** `node --check` clean; backend suite green (**519 passing**, unchanged — frontend
+  work adds no backend tests and causes no regressions).
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.
