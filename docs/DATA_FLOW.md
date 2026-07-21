@@ -229,14 +229,17 @@ scalars `MonitorSnapshot` now copies verbatim from the reused analysis.
 
 | Concern | Mechanism | Lifetime |
 |---|---|---|
-| Immutable external reads (verified source, creation facts, tx/logs) | `TTLCache` (in-process) | TTL-bounded, per process |
+| Immutable external reads (verified source, creation facts, tx/logs, earliest-funder txs) | `TTLCache` (in-process) | 300s, per process |
+| Market/token reads (DexScreener pairs, `token_info`, `token_counters`) | short-TTL `TTLCache` | ~15s (`market_cache_ttl_seconds`) |
 | Executed honeypot verdicts | `TTLCache` | TTL-bounded; "unknown" never cached |
 | KOL contract analysis dedup | per-address `TTLCache` in `kol_crypto_pipeline` | 600s |
 | Wallet watchlist | `watchlist.db` | durable |
 | KOL snapshots, events, intelligence, history | `kol.db` | durable (with per-table retention) |
 
-Freshness-sensitive data (market, holders, transfers) is **never cached** so
-scoring always sees live data.
+Holder lists and transfer history stay **always-live** (never cached). The short
+market cache only collapses duplicate reads within a scan burst / rapid re-analysis
+— a single analyze reads each source once, so per-analyze output is unchanged — and
+errors are never cached, so a transient failure is always retried.
 
 ## Chain resolution (M22)
 

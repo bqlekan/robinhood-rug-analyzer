@@ -382,6 +382,7 @@ scanForm.addEventListener("submit", async (event) => {
 
 const analyzeForm = document.querySelector("#analyze-form");
 const result = document.querySelector("#result");
+const analyzeStatus = document.querySelector("#analyze-status");
 
 function renderSignals(signals) {
   if (!signals.length) {
@@ -588,15 +589,10 @@ analyzeForm.addEventListener("submit", async (event) => {
   analyzing = true;
   const submitBtn = analyzeForm.querySelector("button[type=submit]");
   const release = lockButton(submitBtn, "Analyzing…");
-  const progress = createProgress(result, ANALYZE_STEPS);
-  // Skeleton lives in a dedicated area under the status while the request runs.
-  let skeleton = document.querySelector("#analyze-skeleton");
-  if (!skeleton) {
-    skeleton = document.createElement("div");
-    skeleton.id = "analyze-skeleton";
-    result.insertAdjacentElement("afterend", skeleton);
-  }
-  skeleton.innerHTML = skeletonAnalysis();
+  // Progress + skeleton live in their OWN status node, never in #result, so the
+  // finish() cleanup timer can never wipe the rendered analysis.
+  const progress = createProgress(analyzeStatus, ANALYZE_STEPS);
+  result.innerHTML = skeletonAnalysis();
 
   try {
     const response = await fetch("/api/v1/analyze", {
@@ -606,8 +602,7 @@ analyzeForm.addEventListener("submit", async (event) => {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "Analysis request failed");
-    progress.finish("");
-    skeleton.innerHTML = "";
+    progress.finish("Analysis complete.");
     renderAnalysis(data);
     result.classList.add("result-enter");
     recordRecent(contractAddress, data.market_data?.base_token_symbol);
@@ -615,7 +610,7 @@ analyzeForm.addEventListener("submit", async (event) => {
     requestAnimationFrame(() => result.scrollIntoView({ behavior: "smooth", block: "start" }));
   } catch (error) {
     progress.fail(`Request failed: ${error.message}`);
-    skeleton.innerHTML = "";
+    result.innerHTML = "";
   } finally {
     analyzing = false;
     release();

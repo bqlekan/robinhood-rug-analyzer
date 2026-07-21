@@ -21,9 +21,19 @@ def _api_v2() -> str:
 # Cache ONLY near-static reads: verified contract source and contract creation
 # facts (creator/creation tx). Both are immutable for a deployed contract.
 # Holder metrics, transfers, token counters, and market data are deliberately
-# NOT cached so scoring always sees live data.
+# NOT long-cached so scoring always sees live data.
 _static_cache = TTLCache(
     ttl=settings.http_cache_ttl_seconds,
+    max_size=settings.http_cache_max_size,
+)
+
+# Short-TTL cache for freshness-sensitive token/market reads. The window is small
+# (`market_cache_ttl_seconds`, ~15s) so it only collapses duplicate reads inside a
+# scan burst / rapid re-analysis — a single analyze never calls these twice on one
+# token, so per-analyze output is unchanged — without serving stale data to a later
+# separate analysis.
+_market_cache = TTLCache(
+    ttl=settings.market_cache_ttl_seconds,
     max_size=settings.http_cache_max_size,
 )
 
@@ -46,13 +56,28 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any] | No
 
 
 async def get_token_info(address: str) -> dict[str, Any] | None:
-    """Token metadata: name, symbol, decimals, total_supply, holders_count, market cap."""
-    return await _get(get_client(), f"/tokens/{address}")
+    """Token metadata: name, symbol, decimals, total_supply, holders_count, market cap.
+
+    Short-TTL cached (see `_market_cache`): collapses duplicate reads across a scan
+    burst / rapid re-analysis; a single analyze reads this once, so its output is
+    unchanged.
+    """
+    async def fetch() -> dict[str, Any] | None:
+        return await _get(get_client(), f"/tokens/{address}")
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_market_cache, f"token_info:{address.lower()}", fetch)
 
 
 async def get_token_counters(address: str) -> dict[str, Any] | None:
-    """Token holder + transfer counts."""
-    return await _get(get_client(), f"/tokens/{address}/counters")
+    """Token holder + transfer counts. Short-TTL cached (see `get_token_info`)."""
+    async def fetch() -> dict[str, Any] | None:
+        return await _get(get_client(), f"/tokens/{address}/counters")
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_market_cache, f"token_counters:{address.lower()}", fetch)
 
 
 async def get_token_holders(address: str, limit: int | None = None) -> list[dict[str, Any]]:
@@ -108,10 +133,20 @@ async def get_address_token_transfers(address: str) -> list[dict[str, Any]]:
 
 
 async def get_address_transactions(address: str) -> list[dict[str, Any]]:
-    """Native transactions touching an address (used to find who funded a wallet)."""
-    payload = await _get(get_client(), f"/addresses/{address}/transactions")
-    items = (payload or {}).get("items") or []
-    return items if isinstance(items, list) else []
+    """Native transactions touching an address (used to find who funded a wallet).
+
+    Cached (static TTL): funder tracing only reads the EARLIEST incoming tx, which is
+    immutable once a wallet exists; caching removes the hottest repeated Blockscout
+    read across the funder-graph walk and repeat analyses without changing the result.
+    """
+    async def fetch() -> list[dict[str, Any]]:
+        payload = await _get(get_client(), f"/addresses/{address}/transactions")
+        items = (payload or {}).get("items") or []
+        return items if isinstance(items, list) else []
+
+    if not settings.http_cache_enabled:
+        return await fetch()
+    return await cached_call(_static_cache, f"address_txs:{address.lower()}", fetch)
 
 
 async def get_address_token_holdings(address: str) -> list[dict[str, Any]]:

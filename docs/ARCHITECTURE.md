@@ -256,7 +256,7 @@ talks to `/api/v1/*` same-origin. A production-readiness polish pass (post-M27) 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.
 - Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_token_holders_paged(address, pages)`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_token_holdings` (M16: a wallet's current token holdings, for cross-token survival), `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`.
 - Dependencies: `http.get_client`, `cache`. Config: `blockscout_base_url`, cache settings.
-- Failure modes: central `_get` returns `None` on any HTTP/JSON error. **Only immutable reads are cached**; holders/transfers/counters/market are always live.
+- Failure modes: central `_get` returns `None` on any HTTP/JSON error. Immutable reads (source, creation facts, mined tx) use the 300s static cache; `token_info`/`token_counters` use a short (~15s `market_cache_ttl_seconds`) cache and `get_address_transactions` uses the static cache (earliest-funder is immutable) to collapse duplicate reads across scan bursts; **holders/transfers stay always-live** (never cached).
 
 **`app/services/rpc_client.py`** — raw JSON-RPC over `rpc_url`.
 - Public: `eth_call(to, data, block="latest", state_override=None)` (not cached), `get_transaction_by_hash` (cached), `get_transaction_receipt` (cached).
@@ -264,7 +264,7 @@ talks to `/api/v1/*` same-origin. A production-readiness polish pass (post-M27) 
 
 **`app/services/dexscreener_client.py`** — DexScreener public pairs.
 - Public: `fetch_token_pairs(address)` (filtered to `dexscreener_chain`), `choose_best_pair(pairs)` (highest USD liquidity).
-- Config: `dexscreener_chain`. Failure modes: returns `[]` on error; not cached.
+- Config: `dexscreener_chain`, `market_cache_ttl_seconds`. Failure modes: returns `[]` on error (errors never cached, so a transient failure is retried); successful pair reads use the short (~15s) market cache to collapse duplicate reads across scan bursts.
 
 **`app/services/lore_client.py`** — public web lore + optional LLM summary.
 - Public: `build_lore(name, symbol, market_socials=None, websites=None) -> TokenLore`.
@@ -626,7 +626,7 @@ behavior is tuned without touching logic.
 |---|---|---|
 | **Chain identity** | Active-chain targeting (read via the `core/chains` abstraction) | `default_chain="robinhood"`, `chain_id=4663`, `chain_name`, `dexscreener_chain="robinhood"`, `blockscout_base_url`, `rpc_url` |
 | **Networking** | Shared HTTP pool + timeouts | `http_timeout=12.0`, `http_max_connections=20` |
-| **HTTP cache** | Near-static read caching | `http_cache_enabled=True`, `http_cache_ttl_seconds=300`, `http_cache_max_size=512` |
+| **HTTP cache** | Near-static read caching | `http_cache_enabled=True`, `http_cache_ttl_seconds=300`, `http_cache_max_size=512`, `market_cache_ttl_seconds=15` (short-TTL market reads) |
 | **Scan tiering** | Cheap pre-screen before deep analysis | `scan_max_tokens=15`, `scan_tiering_enabled=True`, `scan_light_promote_threshold=25`, `scan_established_holder_floor=500`, `scan_max_deep_analyses=5` |
 | **Honeypot sim** | Sell-tax/honeypot detection | `honeypot_sim_enabled=True`, `dex_routers`, `honeypot_buy_wei=1e16`, `honeypot_high_tax_pct=30`, prober artifact refs |
 | **Route discovery** | v3 pool/route selection | `honeypot_quote_assets` (WETH, USDG), `honeypot_fee_tiers`, `honeypot_min_quote_reserve` (per-asset floors) |

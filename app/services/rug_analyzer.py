@@ -301,6 +301,30 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     if token_info or address_info or holders_raw:
         data_sources.append("Blockscout (Robinhood Chain)")
 
+    # Kick off the independent tail stages NOW so their I/O overlaps the sequential
+    # on-chain work below (transfers -> funder trace -> creator scan). Each depends
+    # only on data already fetched above, computes nothing the later stages feed, and
+    # is awaited at its original position — so output is identical, just concurrent:
+    #   - lore: slow DuckDuckGo web search (only when include_lore)
+    #   - honeypot: sell-tax simulation over the already-chosen market pair
+    #   - privileges: owner()/paused() reads over the already-fetched contract payload
+    lore_task = None
+    if include_lore:
+        _lore_name = (token_info or {}).get("name") or (market_data.base_token_name if market_data else None)
+        _lore_symbol = (token_info or {}).get("symbol") or (market_data.base_token_symbol if market_data else None)
+        lore_task = asyncio.ensure_future(
+            build_lore(
+                _lore_name,
+                _lore_symbol,
+                market_data.socials if market_data else [],
+                market_data.websites if market_data else [],
+            )
+        )
+    honeypot_task = asyncio.ensure_future(honeypot_sim.simulate(normalized, market_data))
+    privileges_task = asyncio.ensure_future(
+        contract_privileges.fetch_privileges(normalized, contract_payload)
+    )
+
     # Age. Prefer the DexScreener pair timestamp; when absent (pre-liquidity tokens),
     # fall back to the contract's creation-tx timestamp so brand-new launches are not
     # scored "unknown age". The creation tx is immutable, so this read is cached.
@@ -447,30 +471,25 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         creation_log_topics=creation_log_topics,
     )
 
-    # Lore.
+    # Lore (started earlier, overlapping the on-chain work; awaited here so the
+    # response assembles in the same order as before).
     lore: TokenLore | None = None
-    if include_lore:
-        name = (token_info or {}).get("name") or (market_data.base_token_name if market_data else None)
-        symbol = (token_info or {}).get("symbol") or (market_data.base_token_symbol if market_data else None)
-        lore = await build_lore(
-            name,
-            symbol,
-            market_data.socials if market_data else [],
-            market_data.websites if market_data else [],
-        )
+    if lore_task is not None:
+        lore = await lore_task
         if lore.sources:
             data_sources.append("Web search (DuckDuckGo)")
 
-    # M10: honeypot / sell-tax simulation. Reuses the already-fetched market pair (no
-    # extra discovery calls); inert unless a router is mapped for this DEX. Its own module
-    # caches an executed verdict, so this stays one sim per analyze.
-    honeypot = await honeypot_sim.simulate(normalized, market_data)
+    # M10: honeypot / sell-tax simulation (started earlier). Reuses the already-fetched
+    # market pair (no extra discovery calls); inert unless a router is mapped for this
+    # DEX. Its own module caches an executed verdict, so this stays one sim per analyze.
+    honeypot = await honeypot_task
 
-    # M11: live contract-privilege / authority reads. Reuses the already-fetched verified
-    # contract payload (no extra Blockscout call) and fires at most two eth_calls for
-    # owner()/paused(). Unverified/no-ABI contracts degrade to analyzed=False (never a
-    # false clean); a confirmed renounce is what silences the retained-power signals.
-    privileges = await contract_privileges.fetch_privileges(normalized, contract_payload)
+    # M11: live contract-privilege / authority reads (started earlier). Reuses the
+    # already-fetched verified contract payload (no extra Blockscout call) and fires at
+    # most two eth_calls for owner()/paused(). Unverified/no-ABI contracts degrade to
+    # analyzed=False (never a false clean); a confirmed renounce is what silences the
+    # retained-power signals.
+    privileges = await privileges_task
 
     # M19: read the prior snapshot and diff it BEFORE scoring, so a slow-rug trend
     # (liquidity draining, concentration rising) can feed a risk signal. The metrics it

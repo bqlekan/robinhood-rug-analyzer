@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     http_cache_enabled: bool = True
     http_cache_ttl_seconds: float = 300.0
     http_cache_max_size: int = 512
+    # Short TTL for freshness-sensitive market/token reads (DexScreener pairs, token
+    # info, holder counters). These feed live scoring, so the window is deliberately
+    # small: it only collapses duplicate reads within a scan burst / rapid re-analysis
+    # (identical output within a single analyze — nothing is called twice on one token)
+    # without letting a stale market value reach a later, separate analysis. Gated by
+    # `http_cache_enabled`; set to 0 to disable just the market cache.
+    market_cache_ttl_seconds: float = 15.0
     # Cap how many tokens the ranked scanner analyzes per request so a single
     # scan cannot exhaust the free Blockscout rate budget.
     scan_max_tokens: int = 15
