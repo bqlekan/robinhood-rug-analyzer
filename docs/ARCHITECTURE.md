@@ -168,7 +168,7 @@ frontend; owns the lifespan-scoped background scheduler.
 - Failure modes: the refresh loop wraps each cycle in try/except so it never dies; forces correct MIME types on Windows so the frontend never serves unstyled.
 
 **`app/api/routes.py`** — the v1 REST surface under `/api/v1`.
-- Public: `GET /chain`, `POST /analyze`, `POST /scan`, `GET /watchlist`, `GET /wallet/{address}`.
+- Public: `GET /chain`, `POST /analyze`, `POST /scan`, `GET /watchlist` (M21: `kind`/`sort` query params), `POST /watchlist/refresh` (M21: on-request refresh fallback for idle hosts), `GET /wallet/{address}`, `GET /history/{address}` (M19: stored trend snapshots).
 - Dependencies: `rug_analyzer`, `watchlist_store`, token models.
 - Failure modes: address validated in the request model; unknown wallet returns 404. No KOL routes are exposed (the KOL engine is background/internal today).
 
@@ -266,7 +266,7 @@ frontend; owns the lifespan-scoped background scheduler.
 ### 3.4 Persistence
 
 **`app/services/watchlist_store.py`** — persistent wallet watchlist (stdlib sqlite3, lock-guarded).
-- Public: `upsert_wallet`, `record_activity`, `get_watchlist(kind=None)`, `get_wallet`, `known_addresses`, `refresh_addresses`, `reset_for_tests`.
+- Public: `upsert_wallet`, `record_activity`, `get_watchlist(kind=None, sort="score")` (M21: filter + whitelisted sort + `prior_tokens` enrichment), `get_wallet` (M21: carries `prior_tokens`), `prior_token_counts`, `known_addresses`, `refresh_addresses`, `get_deployer`/`upsert_deployer`, `reset_for_tests`.
 - Tables: `wallets` (PK `address`), `wallet_activity` (UNIQUE `(wallet, token_address, timestamp)`).
 - Config: `watchlist_db_path`. Failure modes: defensive; callers wrap writes in try/except.
 
@@ -907,6 +907,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M18 — Persistent deployer reputation | Done | `watchlist_store` `deployers` table (`get_deployer`/`upsert_deployer`, TTL-aware); `_scan_creator_launches` reuses a fresh cached launch history and skips the live creator scan within `deployer_reputation_ttl_hours`; a freshly-scanned deployer with real launches is persisted, feeding the existing `analyze_dev` serial-rugger/mixed signals |
 | M19 — Historical snapshots & trend detection | Done | new `snapshot_store` (append/prune/latest, `snapshot_history_retain`); `analyze_trend` diffs the prior snapshot (liquidity drop / concentration rise) into a `TokenTrend`; `scoring` adds slow-rug signals; `GET /history/{address}` endpoint; snapshot written each analyze after scoring |
 | M20 — Technical-debt cleanup | Done | removed dead multi-chain env keys (`ETHERSCAN`/`BSCSCAN`/`POLYGONSCAN`) from `render.yaml` + `.env.example`; dropped a redundant `lp_addr` reassignment; verified prior cleanups (`_member_key`, dead age block, `data/` ignored, `rpc_url` now live) already resolved — no behavior change |
+| M21 — Watchlist improvements | Done | `get_watchlist(kind, sort)` whitelisted filter/sort + `prior_tokens` enrichment (shared `_prior_token_counts_locked`); `get_wallet` carries `prior_tokens`; `GET /watchlist?kind=&sort=` + `POST /watchlist/refresh` on-request fallback (reuses `refresh_watchlisted`); frontend filter/sort controls + refresh button |
 | M23-A — KOL watchlist + provider abstraction | Done | `models/kol.py`, `social/base`, `social/registry`, `kol_store`, `kol_watchlist` |
 | M23-B — X following snapshot engine | Done | `social/x_provider`, `x_session`, `x_scraper` |
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |

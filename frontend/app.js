@@ -380,7 +380,7 @@ function walletCard(w) {
       <div class="ranked-main">
         <strong>${esc(w.label || w.kind)}${w.proxy_score != null ? ` · proxy ${esc(w.proxy_score)}` : ""}</strong>
         <code class="addr" data-address="${esc(w.address)}">${esc(w.address)}</code>
-        <div class="ranked-meta"><span>Recently buying:</span></div>
+        <div class="ranked-meta"><span>${w.prior_tokens ? `Seen on ${esc(w.prior_tokens)} token${w.prior_tokens === 1 ? "" : "s"} · ` : ""}Recently buying:</span></div>
         <div class="chips">${buys || '<span class="chip">no recent buys tracked</span>'}</div>
       </div>
       <div class="score-badge" style="background: ${w.kind === "smart" ? "#146c3a" : "#8a6d1f"}">
@@ -392,8 +392,13 @@ function walletCard(w) {
 async function loadWatchlist() {
   walletsResults.innerHTML = "";
   walletsNote.textContent = "Loading watchlist...";
+  // M21: filter by kind + sort key from the controls; the server whitelists both.
+  const kind = document.querySelector("#wallets-kind")?.value || "";
+  const sort = document.querySelector("#wallets-sort")?.value || "score";
+  const params = new URLSearchParams({ sort });
+  if (kind) params.set("kind", kind);
   try {
-    const response = await fetch("/api/v1/watchlist");
+    const response = await fetch(`/api/v1/watchlist?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "Watchlist request failed");
     walletsNote.textContent = data.note;
@@ -409,10 +414,27 @@ async function loadWatchlist() {
   }
 }
 
+// M21: on-request refresh fallback for idle-prone hosts (Render free tier suspends
+// the background loop). Re-pulls a bounded batch from chain, then reloads the view.
+async function refreshWatchlistFromChain() {
+  walletsNote.textContent = "Refreshing from chain...";
+  try {
+    const response = await fetch("/api/v1/watchlist/refresh", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Refresh failed");
+  } catch (error) {
+    walletsNote.textContent = `Refresh failed: ${error.message}`;
+    return;
+  }
+  await loadWatchlist();
+}
+
 walletsForm.addEventListener("submit", (event) => {
   event.preventDefault();
   loadWatchlist();
 });
+
+document.querySelector("#wallets-refresh").addEventListener("click", refreshWatchlistFromChain);
 
 // Clicking a wallet address analyzes nothing (wallets aren't tokens); just copy-friendly.
 

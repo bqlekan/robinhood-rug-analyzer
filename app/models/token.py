@@ -342,6 +342,9 @@ class WatchlistEntry(BaseModel):
     label: str | None = None
     first_seen: str | None = None
     last_refreshed: str | None = None
+    # M21: distinct tokens this wallet has been recorded active on (cross-token history,
+    # from the M17 persisted memory). 0 until it appears on more than one token.
+    prior_tokens: int = 0
     recent_buys: list[WalletActivity] = Field(default_factory=list)
 
 

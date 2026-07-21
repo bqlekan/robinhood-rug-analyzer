@@ -51,7 +51,17 @@
     <section id="tab-wallets" class="tab-panel">
       <form id="wallets-form" class="controls">
         <label>On-chain wallet intelligence</label>
-        <button type="submit">Refresh Watchlist</button>
+        <select id="wallets-kind" aria-label="Filter by wallet kind">
+          <option value="">All kinds</option>
+          <option value="smart">Smart only</option>
+          <option value="insider">Insider only</option>
+        </select>
+        <select id="wallets-sort" aria-label="Sort watchlist">
+          <option value="score">Sort by score</option>
+          <option value="recency">Sort by recency</option>
+        </select>
+        <button type="submit">Load</button>
+        <button type="button" id="wallets-refresh">Refresh from chain</button>
       </form>
       <div id="wallets-note" class="status">
         Smart-wallet scores are heuristic estimates from free on-chain behavior, not verified ROI.

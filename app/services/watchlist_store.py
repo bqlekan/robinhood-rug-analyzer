@@ -161,19 +161,30 @@ def _recent_buys(conn: sqlite3.Connection, wallet: str, limit: int = 10) -> list
     ]
 
 
-def get_watchlist(kind: str | None = None, limit: int = 100) -> list[WatchlistEntry]:
+def get_watchlist(kind: str | None = None, limit: int = 100, sort: str = "score") -> list[WatchlistEntry]:
+    """Flagged wallets, optionally filtered by kind and sorted (M21).
+
+    `sort` is a whitelisted key (never raw SQL): "score" (proxy_score desc, then
+    recency) or "recency" (most recently refreshed first). Each entry is enriched
+    with `prior_tokens` — its distinct cross-token activity count (M17 memory).
+    """
+    order = {
+        "score": "proxy_score DESC NULLS LAST, last_refreshed DESC",
+        "recency": "last_refreshed DESC, proxy_score DESC NULLS LAST",
+    }.get(sort, "proxy_score DESC NULLS LAST, last_refreshed DESC")
     with _LOCK:
         conn = _connect()
         if kind:
             rows = conn.execute(
-                "SELECT * FROM wallets WHERE kind = ? ORDER BY proxy_score DESC NULLS LAST, last_refreshed DESC LIMIT ?",
+                f"SELECT * FROM wallets WHERE kind = ? ORDER BY {order} LIMIT ?",
                 (kind, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM wallets ORDER BY proxy_score DESC NULLS LAST, last_refreshed DESC LIMIT ?",
+                f"SELECT * FROM wallets ORDER BY {order} LIMIT ?",
                 (limit,),
             ).fetchall()
+        prior = _prior_token_counts_locked(conn, [r["address"] for r in rows])
         entries = []
         for r in rows:
             entries.append(
@@ -184,6 +195,7 @@ def get_watchlist(kind: str | None = None, limit: int = 100) -> list[WatchlistEn
                     label=r["label"],
                     first_seen=r["first_seen"],
                     last_refreshed=r["last_refreshed"],
+                    prior_tokens=prior.get(r["address"], 0),
                     recent_buys=_recent_buys(conn, r["address"]),
                 )
             )
@@ -199,6 +211,7 @@ def get_wallet(address: str) -> WatchlistEntry | None:
         r = conn.execute("SELECT * FROM wallets WHERE address = ?", (address,)).fetchone()
         if not r:
             return None
+        prior = _prior_token_counts_locked(conn, [address])
         return WatchlistEntry(
             address=r["address"],
             kind=r["kind"],
@@ -206,6 +219,7 @@ def get_wallet(address: str) -> WatchlistEntry | None:
             label=r["label"],
             first_seen=r["first_seen"],
             last_refreshed=r["last_refreshed"],
+            prior_tokens=prior.get(address, 0),
             recent_buys=_recent_buys(conn, r["address"], limit=25),
         )
 
@@ -232,23 +246,39 @@ def prior_token_counts(addresses: list[str], exclude_token: str | None = None) -
     if not addrs:
         return {}
     exclude = (exclude_token or "").lower()
-    placeholders = ",".join("?" for _ in addrs)
     try:
         with _LOCK:
             conn = _connect()
-            rows = conn.execute(
-                f"""
-                SELECT wallet, COUNT(DISTINCT token_address) AS n
-                FROM wallet_activity
-                WHERE wallet IN ({placeholders}) AND token_address != ?
-                GROUP BY wallet
-                """,
-                (*addrs, exclude),
-            ).fetchall()
-        return {r["wallet"]: r["n"] for r in rows}
+            return _prior_token_counts_locked(conn, addrs, exclude_token=exclude)
     except Exception as exc:  # store is a cache, never break analysis
         logger.warning("prior_token_counts failed: %s", exc)
         return {}
+
+
+def _prior_token_counts_locked(
+    conn: sqlite3.Connection, addresses: list[str], exclude_token: str | None = None
+) -> dict[str, int]:
+    """Distinct cross-token activity count per address. Caller must hold `_LOCK`.
+
+    Shared by `prior_token_counts` (M17) and the M21 watchlist/detail reads so the
+    count is computed with one grouped query, never per-row. Addresses are assumed
+    already lowercased. Returns {} for an empty list.
+    """
+    addrs = [a for a in (addresses or []) if a]
+    if not addrs:
+        return {}
+    exclude = (exclude_token or "").lower()
+    placeholders = ",".join("?" for _ in addrs)
+    rows = conn.execute(
+        f"""
+        SELECT wallet, COUNT(DISTINCT token_address) AS n
+        FROM wallet_activity
+        WHERE wallet IN ({placeholders}) AND token_address != ?
+        GROUP BY wallet
+        """,
+        (*addrs, exclude),
+    ).fetchall()
+    return {r["wallet"]: r["n"] for r in rows}
 
 
 # --- Deployer reputation (M18) ---

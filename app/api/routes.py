@@ -11,6 +11,7 @@ from app.models.token import (
 )
 from app.services import snapshot_store, watchlist_store
 from app.services.rug_analyzer import analyze_token_contract, scan_and_rank
+from app.services.wallet_intel import refresh_watchlisted
 
 router = APIRouter(prefix="/api/v1", tags=["tokens"])
 
@@ -44,13 +45,32 @@ async def scan_tokens(payload: ScanRequest) -> ScanResponse:
 
 
 @router.get("/watchlist", response_model=WatchlistResponse)
-async def get_watchlist() -> WatchlistResponse:
-    """Return flagged smart and insider wallets with what they've been buying."""
+async def get_watchlist(kind: str | None = None, sort: str = "score") -> WatchlistResponse:
+    """Return flagged smart and insider wallets with what they've been buying.
+
+    M21: `kind` filters to "smart" or "insider" (omit for both); `sort` is "score"
+    (default) or "recency". Each wallet carries its cross-token `prior_tokens` count.
+    """
+    kind = kind if kind in ("smart", "insider") else None
+    smart = watchlist_store.get_watchlist(kind="smart", sort=sort) if kind in (None, "smart") else []
+    insider = watchlist_store.get_watchlist(kind="insider", sort=sort) if kind in (None, "insider") else []
     return WatchlistResponse(
-        smart_wallets=watchlist_store.get_watchlist(kind="smart"),
-        insider_wallets=watchlist_store.get_watchlist(kind="insider"),
+        smart_wallets=smart,
+        insider_wallets=insider,
         note=_WATCHLIST_NOTE,
     )
+
+
+@router.post("/watchlist/refresh")
+async def refresh_watchlist() -> dict:
+    """On-request watchlist refresh (M21).
+
+    A fallback for idle-prone hosts (e.g. Render free tier) where the background
+    `_watchlist_refresh_loop` may be suspended: re-pulls recent buys for a bounded
+    batch of the oldest-refreshed wallets. Bounded by `watchlist_refresh_batch`.
+    """
+    refreshed = await refresh_watchlisted(settings.watchlist_refresh_batch)
+    return {"refreshed": refreshed}
 
 
 @router.get("/wallet/{address}", response_model=WatchlistEntry)

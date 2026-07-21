@@ -737,7 +737,17 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
-### M21 — Watchlist improvements
+### M21 — Watchlist improvements ✅ COMPLETE
+
+- **Status:** ✅ **COMPLETE** (2026-07-19). `watchlist_store.get_watchlist(kind, sort)` now takes a
+  whitelisted `sort` ("score" | "recency"; never raw SQL) alongside the existing `kind` filter, and
+  every entry (list + `get_wallet` detail) is enriched with its cross-token `prior_tokens` count via a
+  shared `_prior_token_counts_locked` helper (one grouped query, reused from M17 — no per-row lookups,
+  no duplicated logic). `GET /watchlist?kind=&sort=` exposes both; new `POST /watchlist/refresh` is an
+  on-request fallback that re-pulls a bounded batch via the existing `refresh_watchlisted`, for
+  idle-prone hosts (Render free tier) where the background `_watchlist_refresh_loop` is suspended.
+  Frontend adds kind/sort selects, a "Refresh from chain" button, and a "seen on N prior tokens" note.
+  465 tests pass.
 
 **Goal:** Make the watchlist more useful: filtering/sorting, richer per-wallet detail, and reliable refresh.
 
