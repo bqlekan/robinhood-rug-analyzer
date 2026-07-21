@@ -73,7 +73,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Event Pipeline** | `kol_store` tables + model vocabularies | Append-only, engine-internal event/timeline logs (follow, crypto, intel). No delivery transport yet. |
 | **Persistence Layer** | `watchlist_store` (wallets), `kol_store` (KOL) | Two independent stdlib-`sqlite3` stores, each lock-guarded. |
 | **Configuration System** | `core/config.py` | One pydantic `BaseSettings`; every threshold/weight/toggle is env-overridable config. |
-| **Scheduler** | `main.py` lifespan | One asyncio background loop (`_watchlist_refresh_loop`). KOL captures have no scheduler yet. |
+| **Scheduler** | `main.py` lifespan | Two asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`), each enable-flag gated. KOL captures have no scheduler yet. |
 | **Notification Layer** | `notifications.py` (Deliverable H) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers (`log`, `memory`). Opt-in, rule-filtered, deduped, failure-isolated. See §6.1. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
 
@@ -913,12 +913,12 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M23-C — Snapshot & diff engine | Done | `social/diff`, `kol_monitor`, snapshot retention |
 | M23-D — Crypto detection + rug reuse | Done | `social/contract_extract`, `crypto_signals`, `crypto_intel`, `kol_crypto_pipeline` |
 | M23-F/G — KOL Intelligence score + clustering | Done | `social/kol_scoring`, `kol_intel_engine`, the intel/history/event tables |
+| M23-H — Alert pipeline (transport-agnostic) | Done | `notifications.py` (`NotificationProvider` ABC, `log`/`memory` sinks, rule-filtered + deduped delivery log); consumes engine events |
+| M24 — Token Watchlist & Monitoring Engine | Done | `models/monitor.py`, `token_monitor_store` (own DB), `token_monitor` (watchlist CRUD + `run_cycle` re-analysis + change detection), `main.py` `_token_monitor_loop` (enable-gated) |
 
-**Not yet built:** M23-E (any deliverable labeled E in the plan), **M23-H
-(alert/notification transport)**, and the deeper on-chain milestones M11–M22
-(privilege reads, full holder set, LP-lock duration, funder-graph depth,
-coordinated-buy timing, smart-wallet cross-token activation, persistent
-reputation, snapshots/trends, multi-chain). See §16.
+**Not yet built:** the KOL *capture* scheduler (a `lifespan` loop driving
+`capture_following` on a cadence — see §16) and **M22** (multi-chain
+re-architecture). All other milestones through M24 are implemented. See §16.
 
 ---
 
@@ -930,23 +930,21 @@ Documented honestly — none of this is hidden.
 - **`smart` wallet list depended on cross-token survival (fixed in M16).** `profile_token_wallets` now runs a bounded `/addresses/{addr}/tokens` survival lookup for near-threshold candidates and folds `surviving_tokens` into the proxy, so the list can populate on real data.
 - **Launchpad creation-evidence path never fires** because `LAUNCHPADS`/`LP_LOCKERS` are empty by design (avoids false "locked"/"safe"). Populating verified entries activates it.
 - **Honeypot sim is inert** on any chain without a mapped router; only Robinhood Chain (Uniswap v3) is wired.
-- **Sampled holders only** — distribution/clusters use one ~50-row sampled page, not the full holder set (M12).
 
 ### Known limitations
-- **No KOL capture scheduler.** `capture_following` exists and is wired end-to-end, but nothing calls it on a cadence yet; the only background loop is the wallet-watchlist refresh. A KOL scheduler is the natural next `lifespan` task.
-- **No notification transport** (M23-H). Events accumulate internally with no delivery.
+- **No KOL capture scheduler.** `capture_following` exists and is wired end-to-end, but nothing calls it on a cadence yet. Two background loops run today (`_watchlist_refresh_loop`, `_token_monitor_loop`); a KOL scheduler is the natural next `lifespan` task.
+- **No real notification transports.** M23-H shipped the publisher layer with `log`/`memory` sinks only; Telegram / Discord / webhook / UI adapters are not built, so alert-worthy events reach only logs and the in-process buffer.
 - **No DB migration framework.** Tables are `CREATE ... IF NOT EXISTS`; additive JSON columns are the only safe evolution today. A real schema change needs an explicit migration.
 - **`_prune_history` uses table-name string interpolation.** Safe because it is only ever called with internal constant table names, but it is not parameterized.
 - **`lore_client` uses its own `httpx.AsyncClient`,** outside the shared bounded pool, so its calls are not counted against the global connection cap.
-- **RPC layer is "partial" (M9).** `eth_call` is used for the honeypot sim and route discovery, but broader privilege/authority reads (M11) are not built.
+- **RPC layer is "partial" (M9).** `eth_call` is used for the honeypot sim, route discovery, and the M11 privilege/authority reads (`owner()`/`paused()`); broader state reads beyond these are not built.
 
 ### Intentionally deferred
 - Multi-chain (M22) — depth over breadth until a product decision.
-- Persistent wallet/deployer reputation (M17/M18) and historical scan snapshots/trends (M19).
 - Alpha scoring — a reserved, inert KOL component until a scorer exists.
 
 ### Planned refactors
-- Extract a notification/publisher interface (unblocks M23-H) that reads existing event tables.
+- Add real notification transports (Telegram / Discord / webhook / UI) as `NotificationProvider` adapters — the M23-H publisher layer is in place; only sinks are missing.
 - Generalize the single-chain assumptions in `rug_analyzer` + clients behind a chain registry when/if multi-chain is greenlit.
 
 ---
