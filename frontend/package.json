@@ -1,0 +1,6 @@
+{
+  "name": "robinhood-rug-analyzer-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Static ES-module frontend served by FastAPI. No build step; no runtime deps."
+}

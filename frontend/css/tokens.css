@@ -1,0 +1,72 @@
+/* Design tokens — colors, spacing, typography, radii extracted from the original
+   styles.css. Values are unchanged; the UI renders identically. Every later
+   stylesheet references these custom properties instead of hard-coded literals. */
+:root {
+  color-scheme: dark;
+
+  /* Typography */
+  --font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Core palette */
+  --bg: #07110d;
+  --text: #effff5;
+  --accent: #68ffad;
+  --primary: #38f58c;
+  --primary-ink: #03100a;
+  --muted: #9ec7ae;
+  --muted-2: #b9d8c6;
+  --link: #7fd0ff;
+  --warning: #ffd166;
+  --warning-soft: #ffd98a;
+  --danger: #ff5c7a;
+  --signal-low: #6fb7ff;
+  --primary-soft: #8affc0;
+  --footnote: #7fa38c;
+
+  /* Text on dark surfaces */
+  --text-soft: #d8ffe8;
+  --text-soft-2: #d7f7e3;
+  --text-soft-3: #e6fff0;
+
+  /* Badge / score backgrounds */
+  --smart-bg: #146c3a;
+  --insider-bg: #8a6d1f;
+
+  /* Surfaces (translucent over the dark bg) */
+  --surface-1: rgba(255, 255, 255, 0.04);
+  --surface-2: rgba(255, 255, 255, 0.05);
+  --surface-3: rgba(255, 255, 255, 0.06);
+  --surface-inset: rgba(0, 0, 0, 0.3);
+  --surface-inset-strong: rgba(0, 0, 0, 0.35);
+  --border-soft: rgba(255, 255, 255, 0.1);
+  --border-soft-2: rgba(255, 255, 255, 0.12);
+  --border-faint: rgba(255, 255, 255, 0.08);
+  --border-input: rgba(255, 255, 255, 0.18);
+  --panel-border: rgba(77, 255, 159, 0.2);
+  --panel-bg: rgba(13, 36, 26, 0.6);
+
+  /* Accent tints */
+  --primary-tint: rgba(56, 245, 140, 0.18);
+  --primary-tint-soft: rgba(56, 245, 140, 0.08);
+  --primary-tint-border: rgba(56, 245, 140, 0.35);
+  --primary-tint-chip: rgba(56, 245, 140, 0.14);
+  --warning-tint: rgba(255, 209, 102, 0.18);
+  --link-tint: rgba(127, 208, 255, 0.08);
+  --link-tint-hover: rgba(127, 208, 255, 0.18);
+  --link-tint-border: rgba(127, 208, 255, 0.35);
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-md: 14px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+}

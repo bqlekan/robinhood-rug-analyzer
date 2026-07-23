@@ -1,0 +1,127 @@
+@import "./tokens.css";
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+}
+
+h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 3rem); }
+h2 { margin: 1.75rem 0 0; font-size: 1.1rem; }
+
+.container {
+  width: min(1000px, 100%);
+  margin: 0 auto;
+  padding: 2rem 1.5rem 3rem;
+}
+
+.hero { padding: 1rem 0 0.5rem; }
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.description {
+  color: var(--muted-2);
+  line-height: 1.6;
+  max-width: 70ch;
+}
+
+.footnote {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-soft);
+  color: var(--footnote);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+/* Inputs */
+input[type="text"],
+input[type="number"] {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border-input);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+}
+
+input[type="text"] { flex: 1; min-width: 260px; }
+
+select {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border-input);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+}
+
+button[type="submit"] {
+  padding: 0.7rem 1.3rem;
+  border: 0;
+  border-radius: 10px;
+  background: var(--primary);
+  color: var(--primary-ink);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+button.is-loading { opacity: 0.7; cursor: progress; }
+
+/* Focus indicators */
+.tab:focus-visible,
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.token-name:focus-visible,
+.recent-chip:focus-visible,
+.tok-btn:focus-visible {
+  outline: 3px solid var(--link);
+  outline-offset: 2px;
+}
+
+/* Animations */
+.panel-enter  { animation: fade-slide 0.28s ease-out; }
+.result-enter { animation: fade-slide 0.32s ease-out; }
+
+@keyframes fade-slide {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill.indeterminate,
+  .skeleton-line,
+  .panel-enter,
+  .result-enter { animation: none; }
+}
+
+@media (max-width: 560px) {
+  .controls { flex-direction: column; align-items: stretch; }
+  .controls button, .controls select { width: 100%; }
+  input[type="text"] { min-width: 0; }
+  .token-actions { gap: 0.3rem; }
+  .tok-btn { flex: 1 1 auto; text-align: center; }
+  .wallet-addr, .addr, .addr-inline { overflow-wrap: anywhere; }
+  .ranked-card { grid-template-columns: auto 1fr; }
+  .score-badge { grid-column: 2; justify-self: start; }
+}

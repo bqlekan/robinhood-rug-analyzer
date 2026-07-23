@@ -169,8 +169,12 @@ frontend; owns the lifespan-scoped background scheduler.
 - Extension: add a background loop as an `asyncio.create_task` in `lifespan`, guarded by an enable flag (this is where a future KOL capture scheduler lands).
 - Failure modes: the refresh loop wraps each cycle in try/except so it never dies; forces correct MIME types on Windows so the frontend never serves unstyled.
 
-**`frontend/` (static UI)** — plain HTML/CSS/JS served at `/`, no build step. `app.js`
-talks to `/api/v1/*` same-origin. A production-readiness polish pass (post-M27) added,
+**`frontend/` (static UI)** — vanilla ES modules served at `/`, no build step (F1).
+`js/main.js` boots the app; `js/api.js` is the single `apiClient` over `/api/v1/*`
+(same-origin); `js/ui.js` holds shared primitives (`esc`/`safeUrl`, progress,
+skeletons, toasts, token-action rows); `js/router.js` is the tab router; `js/pages/*`
+are the per-tab feature modules. Styles are split into `css/{tokens,base,components}.css`
+(design tokens as CSS custom properties). A production-readiness polish pass (post-M27) added,
 **frontend-only** (no backend/API/scoring change):
 - **Token navigation:** every discovered token (ranked scanner + each Smart Wallet's
   recent buys) is a clickable control that switches to Analyze, populates the contract,

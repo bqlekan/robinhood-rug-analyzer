@@ -255,7 +255,7 @@ and stays in `settings`, not in `ChainConfig`.
 
 ---
 
-## Frontend interaction flow (static UI, `frontend/app.js`)
+## Frontend interaction flow (static UI, ES modules under `frontend/js/`)
 
 The UI is a thin same-origin client over the existing API — it adds **no** data or
 logic, only how a request is triggered and how progress/results are shown. A
