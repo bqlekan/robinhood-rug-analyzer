@@ -23,6 +23,7 @@
       <button class="tab" data-tab="scan" role="tab" id="tabbtn-scan" aria-selected="false" aria-controls="tab-scan" tabindex="-1">Ranked Scanner</button>
       <button class="tab" data-tab="analyze" role="tab" id="tabbtn-analyze" aria-selected="false" aria-controls="tab-analyze" tabindex="-1">Analyze a Token</button>
       <button class="tab" data-tab="wallets" role="tab" id="tabbtn-wallets" aria-selected="false" aria-controls="tab-wallets" tabindex="-1">Smart Wallets</button>
+      <button class="tab" data-tab="kol" role="tab" id="tabbtn-kol" aria-selected="false" aria-controls="tab-kol" tabindex="-1">KOL Intelligence</button>
     </nav>
 
     <!-- Dashboard -->
@@ -85,6 +86,11 @@
         Analyze or scan tokens to populate the watchlist.
       </div>
       <div id="wallets-results"></div>
+    </section>
+
+    <!-- KOL Intelligence -->
+    <section id="tab-kol" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-kol">
+      <div id="kol-results" aria-live="polite"></div>
     </section>
 
     <footer class="footnote">

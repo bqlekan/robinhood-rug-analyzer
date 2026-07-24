@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.api.kol_routes import router as kol_router
 from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.services import http, kol_scheduler, kol_watchlist, token_monitor, wallet_intel
@@ -128,6 +129,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(kol_router)
 
 
 @app.get("/health", tags=["ops"])
