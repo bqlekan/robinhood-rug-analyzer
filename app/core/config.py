@@ -75,6 +75,24 @@ class Settings(BaseSettings):
     # Max concurrent deep analyses in flight during a scan (bounds fan-out).
     scan_max_deep_analyses: int = 5
 
+    # --- Opportunity discovery (D1) ---
+    # The ranked scanner is an OPPORTUNITY scanner: it should surface newly-launched
+    # tokens, not the chain's oldest established assets (which Blockscout /tokens lists
+    # first, by market cap). Before ranking, candidates are enriched with their
+    # DexScreener launch time + liquidity (a free source the deep pipeline already reads,
+    # so the enrichment fetch is cache-reused by analysis — no extra scan latency) and
+    # then filtered/sorted so fresh, tradeable launches win the candidate slots.
+    scan_prefer_recent_launches: bool = True
+    # How many list_tokens candidates to enrich + rank for freshness before analysis.
+    # Bounds the enrichment fan-out; >= scan_max_tokens so real launches aren't crowded out.
+    scan_candidate_pool_size: int = 60
+    # Launches older than this are dropped from the opportunity pool. A token whose age
+    # cannot be determined (no market pair) is KEPT — graceful fallback to prior behaviour.
+    scan_max_launch_age_days: float = 30.0
+    # Candidates with market liquidity below this are treated as dead/abandoned and
+    # skipped. 0 disables the floor. Tokens with unknown liquidity are kept (fallback).
+    scan_min_candidate_liquidity_usd: float = 500.0
+
     # --- Honeypot / sell-tax simulation (M10) ---
     # Inert by default: with no router mapped for a token's DEX, no sim calls fire and
     # behavior is unchanged. Activates only once a chain router is sourced and mapped.

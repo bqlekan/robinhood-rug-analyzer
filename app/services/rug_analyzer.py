@@ -561,6 +561,61 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     )
 
 
+async def _select_opportunity_candidates(tokens: list[dict], limit: int) -> list[dict]:
+    """Reorder list_tokens candidates so fresh, tradeable launches win the slots (D1).
+
+    Blockscout /tokens is ordered by market cap, so the raw list is dominated by old
+    established assets. For the bounded candidate pool we read each token's DexScreener
+    pair once (a free source the deep pipeline reads anyway -> the short-TTL market cache
+    serves the later analyze from this same fetch, so no extra scan latency) and:
+      - drop launches older than scan_max_launch_age_days,
+      - drop dead/abandoned tokens below scan_min_candidate_liquidity_usd,
+      - sort the survivors newest-launch-first.
+
+    Graceful fallback: a token whose launch age is unknown (no market pair) is kept and
+    ordered after the dated launches, so if no ages resolve at all the original order is
+    preserved and behaviour matches the prior scanner.
+    """
+    pool = tokens[: max(limit, settings.scan_candidate_pool_size)]
+    max_age_ms = settings.scan_max_launch_age_days * 86_400_000
+    min_liq = settings.scan_min_candidate_liquidity_usd
+
+    async def enrich(token: dict) -> tuple[dict, int | None, float | None] | None:
+        addr = token.get("address_hash")
+        if not addr:
+            return None
+        try:
+            best = choose_best_pair(await fetch_token_pairs(addr))
+        except Exception as exc:  # discovery is best-effort; never fail the scan
+            logger.warning("Candidate enrich failed for %s: %s", addr, exc)
+            best = None
+        created = to_int((best or {}).get("pairCreatedAt")) if best else None
+        liq = to_float((best.get("liquidity") or {}).get("usd")) if best else None
+        # Dead/abandoned: has a market but liquidity is below the floor -> skip.
+        if best is not None and min_liq > 0 and liq is not None and liq < min_liq:
+            return None
+        # Too old: has a datable launch beyond the window -> skip.
+        if created is not None and max_age_ms > 0:
+            _, now_ms = _pair_age_ms(created)
+            if now_ms - created > max_age_ms:
+                return None
+        return token, created, liq
+
+    enriched = [r for r in await asyncio.gather(*(enrich(t) for t in pool)) if r is not None]
+    # Newest launch first; unknown-age tokens (created is None) sort last (fallback tail).
+    enriched.sort(key=lambda r: r[1] if r[1] is not None else -1, reverse=True)
+    selected = [r[0] for r in enriched][:limit]
+    # Total fallback: enrichment resolved nothing usable -> original order.
+    return selected or tokens[:limit]
+
+
+def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
+    """Return (created_ms, now_ms). Split out so `now` can be stubbed in tests."""
+    import time
+
+    return _created_ms, int(time.time() * 1000)
+
+
 async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
     """Pull active Robinhood Chain tokens, analyze each, and rank by risk score."""
     limit = min(limit, settings.scan_max_tokens)
@@ -570,7 +625,13 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
     tokens = [
         t for t in tokens
         if not launchpad_registry.is_established_token(t.get("symbol"), t.get("name"))
-    ][:limit]
+    ]
+    # D1: prefer recently-launched, still-tradeable tokens for the candidate slots.
+    # Old established coins otherwise dominate (Blockscout orders /tokens by market cap).
+    if settings.scan_prefer_recent_launches:
+        tokens = await _select_opportunity_candidates(tokens, limit)
+    else:
+        tokens = tokens[:limit]
 
     if not tokens:
         return ScanResponse(
