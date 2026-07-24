@@ -348,3 +348,8 @@
 .history-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .history-table th { padding: 0.4rem 0.6rem; text-align: left; color: var(--muted); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; border-bottom: 1px solid var(--border-soft); }
 .history-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border-faint); color: var(--text-soft); font-family: var(--font-mono); }
+
+/* --- Wallet detail (F4) --- */
+.wallet-detail-wrap { margin-top: 0.5rem; }
+.wallet-detail { margin-top: 0.5rem; padding: 0.6rem 0.75rem; border: 1px solid var(--border-faint); border-radius: var(--radius); background: var(--surface-inset); }
+.wallet-detail-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-bottom: 0.5rem; color: var(--muted-2); font-size: 0.8rem; }
