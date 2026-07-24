@@ -278,3 +278,63 @@
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
 }
+
+/* --- Dashboard (F2) — landing overview; reuses tokens + existing card idiom --- */
+.dash-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  padding: 1rem 1.2rem;
+  margin-top: 1rem;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-bg);
+}
+.dash-banner .dash-chain-name { font-size: 1.05rem; font-weight: 800; }
+.dash-banner .dash-chain-meta { color: var(--muted-2); font-size: 0.85rem; }
+.dash-banner a { color: var(--link); font-weight: 700; }
+
+/* Liveness dot: green when /health is ok, red otherwise, amber while checking. */
+.dash-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+}
+.dash-dot { width: 10px; height: 10px; border-radius: var(--radius-pill); background: var(--warning); }
+.dash-dot.up { background: var(--primary); }
+.dash-dot.down { background: var(--danger); }
+
+.dash-quick { margin-top: 1rem; }
+
+.dash-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+.dash-stat {
+  padding: 0.9rem;
+  border: 1px solid var(--border-soft-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  text-align: center;
+}
+.dash-stat strong { display: block; font-size: 1.6rem; }
+.dash-stat span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dash-section-title {
+  margin: 1.75rem 0 0;
+  font-size: 1.1rem;
+}
+.dash-empty { color: var(--muted-2); font-size: 0.9rem; margin-top: 0.5rem; }

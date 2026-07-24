@@ -19,13 +19,28 @@
     </header>
 
     <nav class="tabs" role="tablist" aria-label="Analyzer sections">
-      <button class="tab active" data-tab="scan" role="tab" id="tabbtn-scan" aria-selected="true" aria-controls="tab-scan">Ranked Scanner</button>
+      <button class="tab active" data-tab="dashboard" role="tab" id="tabbtn-dashboard" aria-selected="true" aria-controls="tab-dashboard">Dashboard</button>
+      <button class="tab" data-tab="scan" role="tab" id="tabbtn-scan" aria-selected="false" aria-controls="tab-scan" tabindex="-1">Ranked Scanner</button>
       <button class="tab" data-tab="analyze" role="tab" id="tabbtn-analyze" aria-selected="false" aria-controls="tab-analyze" tabindex="-1">Analyze a Token</button>
       <button class="tab" data-tab="wallets" role="tab" id="tabbtn-wallets" aria-selected="false" aria-controls="tab-wallets" tabindex="-1">Smart Wallets</button>
     </nav>
 
+    <!-- Dashboard -->
+    <section id="tab-dashboard" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-dashboard">
+      <div id="dashboard-chain" class="dash-banner" aria-live="polite"></div>
+      <div id="dashboard-quick" class="dash-quick">
+        <form id="quick-analyze-form" class="controls">
+          <label for="quick-address">Quick analyze</label>
+          <input id="quick-address" type="text" placeholder="0x… token address" />
+          <button type="submit">Analyze</button>
+        </form>
+      </div>
+      <div id="dashboard-watchlist" class="dash-stat-row" aria-live="polite"></div>
+      <div id="dashboard-top-risk" aria-live="polite"></div>
+    </section>
+
     <!-- Ranked scanner -->
-    <section id="tab-scan" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-scan">
+    <section id="tab-scan" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-scan">
       <form id="scan-form" class="controls">
         <label for="scan-limit">Tokens to scan</label>
         <input id="scan-limit" name="limit" type="number" min="1" max="50" value="10" />
