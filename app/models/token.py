@@ -407,6 +407,18 @@ class TokenAnalysisResponse(BaseModel):
     analysis: RugAnalysis
 
 
+class OpportunitySignal(BaseModel):
+    name: str
+    positive: bool
+    detail: str
+
+
+class OpportunityResult(BaseModel):
+    alpha_score: int
+    alpha_level: str
+    signals: list[OpportunitySignal] = Field(default_factory=list)
+
+
 class RankedToken(BaseModel):
     contract_address: str
     name: str | None = None
@@ -421,6 +433,9 @@ class RankedToken(BaseModel):
     top_signal: str | None = None
     # Watchlisted wallets (smart/insider) that bought or hold this token.
     flagged_by: list[WatchlistHit] = Field(default_factory=list)
+    alpha_score: int | None = None
+    alpha_level: str | None = None
+    alpha_signals: list[OpportunitySignal] = Field(default_factory=list)
 
 
 class ScanResponse(BaseModel):

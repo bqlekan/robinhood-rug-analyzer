@@ -1,7 +1,7 @@
 /** Ranked Scanner page — POST /api/v1/scan, render risk-ranked token cards. */
 import { apiClient } from "../api.js";
 import {
-  esc, fmtCurrency, fmtAge, riskColor, badgeHtml,
+  esc, fmtCurrency, fmtAge, riskColor, alphaColor, alphaSignalsHtml, badgeHtml,
   createProgress, lockButton, skeletonCards, tokenActions, wireTokenActions, toast,
 } from "../ui.js";
 
@@ -18,7 +18,7 @@ function renderRanked(tokens) {
   scanResults.innerHTML = tokens
     .map(
       (t, i) => `
-      <article class="ranked-card" data-address="${esc(t.contract_address)}" style="border-left: 5px solid ${riskColor(t.risk_score)}">
+      <article class="ranked-card" data-address="${esc(t.contract_address)}" style="border-left: 5px solid ${alphaColor(t.alpha_score)}">
         <div class="rank">#${i + 1}</div>
         <div class="ranked-main">
           <strong><button type="button" class="token-name" data-address="${esc(t.contract_address)}" data-symbol="${esc(t.symbol || t.name || "")}" title="Analyze this token">${esc(t.name || "Unknown")}</button> <span class="sym">${esc(t.symbol || "")}</span></strong>
@@ -31,11 +31,17 @@ function renderRanked(tokens) {
           </div>
           ${tokenActions(t.contract_address)}
           ${badgeHtml(t.flagged_by)}
-          ${t.top_signal ? `<div class="top-signal">Top risk: ${esc(t.top_signal)}</div>` : ""}
+          ${alphaSignalsHtml(t.alpha_signals)}
         </div>
-        <div class="score-badge" style="background: ${riskColor(t.risk_score)}">
-          <strong>${t.risk_score}</strong>
-          <span>${esc((t.risk_level || "").toUpperCase())}</span>
+        <div class="score-badges">
+          <div class="score-badge" style="background: ${alphaColor(t.alpha_score)}">
+            <strong>${t.alpha_score ?? "–"}</strong>
+            <span>ALPHA</span>
+          </div>
+          <div class="score-badge score-badge-sm" style="background: ${riskColor(t.risk_score)}">
+            <strong>${t.risk_score}</strong>
+            <span>RISK</span>
+          </div>
         </div>
       </article>`,
     )

@@ -4,7 +4,7 @@
  *  No invented metrics: every number traces to a real response field. */
 import { apiClient, chainInfo } from "../api.js";
 import {
-  esc, safeUrl, fmtCurrency, fmtAge, riskColor,
+  esc, safeUrl, fmtCurrency, fmtAge, riskColor, alphaColor, alphaSignalsHtml,
   skeletonCards, tokenActions, wireTokenActions, badgeHtml,
 } from "../ui.js";
 
@@ -57,23 +57,23 @@ async function loadWatchlistCounts() {
 // --- Top-risk panel (small scan; rows link into Analyze like the scanner) ---
 async function loadTopRisk() {
   topRiskBox.innerHTML = `
-    <h2 class="dash-section-title">Top risk right now</h2>
+    <h2 class="dash-section-title">Top opportunities</h2>
     ${skeletonCards(3)}`;
   try {
     const data = await apiClient.scan(TOP_RISK_LIMIT, false);
     const tokens = data.ranked_tokens || [];
     if (!tokens.length) {
       topRiskBox.innerHTML = `
-        <h2 class="dash-section-title">Top risk right now</h2>
+        <h2 class="dash-section-title">Top opportunities</h2>
         <p class="dash-empty">No active tokens returned by the scan.</p>`;
       return;
     }
     topRiskBox.innerHTML = `
-      <h2 class="dash-section-title">Top risk right now</h2>
+      <h2 class="dash-section-title">Top opportunities</h2>
       <div class="ranked-list">${tokens
         .map(
           (t, i) => `
-          <article class="ranked-card" data-address="${esc(t.contract_address)}" style="border-left: 5px solid ${riskColor(t.risk_score)}">
+          <article class="ranked-card" data-address="${esc(t.contract_address)}" style="border-left: 5px solid ${alphaColor(t.alpha_score)}">
             <div class="rank">#${i + 1}</div>
             <div class="ranked-main">
               <strong><button type="button" class="token-name" data-address="${esc(t.contract_address)}" data-symbol="${esc(t.symbol || t.name || "")}" title="Analyze this token">${esc(t.name || "Unknown")}</button> <span class="sym">${esc(t.symbol || "")}</span></strong>
@@ -85,11 +85,17 @@ async function loadTopRisk() {
               </div>
               ${tokenActions(t.contract_address)}
               ${badgeHtml(t.flagged_by)}
-              ${t.top_signal ? `<div class="top-signal">Top risk: ${esc(t.top_signal)}</div>` : ""}
+              ${alphaSignalsHtml(t.alpha_signals)}
             </div>
-            <div class="score-badge" style="background: ${riskColor(t.risk_score)}">
-              <strong>${t.risk_score}</strong>
-              <span>${esc((t.risk_level || "").toUpperCase())}</span>
+            <div class="score-badges">
+              <div class="score-badge" style="background: ${alphaColor(t.alpha_score)}">
+                <strong>${t.alpha_score ?? "–"}</strong>
+                <span>ALPHA</span>
+              </div>
+              <div class="score-badge score-badge-sm" style="background: ${riskColor(t.risk_score)}">
+                <strong>${t.risk_score}</strong>
+                <span>RISK</span>
+              </div>
             </div>
           </article>`,
         )
@@ -97,7 +103,7 @@ async function loadTopRisk() {
     wireTokenActions(topRiskBox);
   } catch (error) {
     topRiskBox.innerHTML = `
-      <h2 class="dash-section-title">Top risk right now</h2>
+      <h2 class="dash-section-title">Top opportunities</h2>
       <p class="dash-empty">Scan failed: ${esc(error.message)}</p>`;
   }
 }

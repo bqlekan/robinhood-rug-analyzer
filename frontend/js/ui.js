@@ -61,6 +61,20 @@ export function riskColor(score) {
   return `hsl(${hue}, 75%, 45%)`;
 }
 
+// Map a 0-100 alpha/opportunity score onto a green gradient (higher = greener).
+export function alphaColor(score) {
+  const s = Math.max(0, Math.min(100, score ?? 0));
+  const hue = (130 * s) / 100;
+  return `hsl(${hue}, 75%, 40%)`;
+}
+
+export function alphaSignalsHtml(signals) {
+  if (!signals || !signals.length) return "";
+  return `<div class="alpha-signals">${signals
+    .map((s) => `<span class="alpha-signal ${s.positive ? "pos" : "neg"}">${s.positive ? "+" : "−"} ${esc(s.detail)}</span>`)
+    .join("")}</div>`;
+}
+
 export function shortAddr(addr) {
   if (!addr) return "N/A";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;

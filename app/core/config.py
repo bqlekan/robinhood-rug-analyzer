@@ -93,6 +93,21 @@ class Settings(BaseSettings):
     # skipped. 0 disables the floor. Tokens with unknown liquidity are kept (fallback).
     scan_min_candidate_liquidity_usd: float = 500.0
 
+    # --- Opportunity Score (Alpha) ---
+    opportunity_score_weights: dict[str, int] = {
+        "risk": 30,
+        "freshness": 15,
+        "liquidity": 20,
+        "smart_wallets": 15,
+        "holder_quality": 10,
+        "honeypot": 5,
+        "verified": 5,
+    }
+    opportunity_exclude_risk_floor: int = 70
+    opportunity_exclude_alpha_floor: int = 30
+    dashboard_sort: str = "alpha"
+    scanner_sort: str = "alpha"
+
     # --- Honeypot / sell-tax simulation (M10) ---
     # Inert by default: with no router mapped for a token's DEX, no sim calls fire and
     # behavior is unchanged. Activates only once a chain router is sourced and mapped.

@@ -102,6 +102,14 @@
 }
 .score-badge strong { display: block; font-size: 1.5rem; }
 .score-badge span { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.06em; }
+.score-badges { display: flex; flex-direction: column; gap: 0.35rem; }
+.score-badge-sm { padding: 0.35rem 0.6rem; }
+.score-badge-sm strong { font-size: 1rem; }
+
+.alpha-signals { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+.alpha-signal { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: var(--radius-pill); }
+.alpha-signal.pos { background: var(--primary-tint); color: var(--primary-soft); }
+.alpha-signal.neg { background: var(--warning-tint); color: var(--warning-soft); }
 
 /* Summary + grids */
 .analysis-summary,

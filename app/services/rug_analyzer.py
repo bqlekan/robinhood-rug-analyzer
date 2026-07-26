@@ -22,6 +22,7 @@ from app.services import analyzers, blockscout_client, contract_intel, contract_
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_latest_pairs, fetch_token_pairs
 from app.services.lore_client import build_lore
+from app.services.opportunity_score import score_opportunity
 from app.services.scoring import LIMITATIONS, score_token, score_token_light
 
 logger = logging.getLogger(__name__)
@@ -636,6 +637,7 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
                 logger.warning("Scan: analysis failed for %s: %s", address, exc)
                 return None
         top_signal = max(result.analysis.signals, key=lambda s: s.points).name if result.analysis.signals else None
+        opp = score_opportunity(result)
         return RankedToken(
             contract_address=address,
             name=token.get("name"),
@@ -649,6 +651,9 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             age_days=result.token_age.age_days if result.token_age else None,
             top_signal=top_signal,
             flagged_by=result.watchlist_hits,
+            alpha_score=opp.alpha_score,
+            alpha_level=opp.alpha_level,
+            alpha_signals=opp.signals,
         )
 
     def _light_ranked(token: dict, address: str, light) -> RankedToken:
@@ -661,6 +666,8 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             risk_level=light.risk_level,
             holder_count=to_int(token.get("holders_count") or token.get("holders")),
             top_signal="Deep analysis skipped: low-risk on cheap pre-screen (high holder count).",
+            alpha_score=0,
+            alpha_level="low",
         )
 
     async def scan_one(token: dict) -> RankedToken | None:
@@ -687,7 +694,14 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
 
     results = await asyncio.gather(*(scan_one(t) for t in tokens))
     ranked = [r for r in results if r is not None]
-    ranked.sort(key=lambda r: r.risk_score, reverse=True)
+    # Exclude obvious rug candidates: high risk AND low opportunity.
+    risk_floor = settings.opportunity_exclude_risk_floor
+    alpha_floor = settings.opportunity_exclude_alpha_floor
+    ranked = [
+        r for r in ranked
+        if not (r.risk_score >= risk_floor and (r.alpha_score or 0) < alpha_floor)
+    ]
+    ranked.sort(key=lambda r: (-(r.alpha_score or 0), r.risk_score))
 
     return ScanResponse(
         chain=chains.active().chain_name,
