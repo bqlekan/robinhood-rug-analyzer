@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     scan_candidate_pool_size: int = 60
     # Launches older than this are dropped from the opportunity pool. A token whose age
     # cannot be determined (no market pair) is KEPT — graceful fallback to prior behaviour.
-    scan_max_launch_age_days: float = 30.0
+    scan_max_launch_age_days: float = 3.0
     # Candidates with market liquidity below this are treated as dead/abandoned and
     # skipped. 0 disables the floor. Tokens with unknown liquidity are kept (fallback).
     scan_min_candidate_liquidity_usd: float = 500.0

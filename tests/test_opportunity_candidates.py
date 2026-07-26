@@ -97,7 +97,7 @@ def test_unknown_age_tokens_are_excluded(monkeypatch):
 def test_dated_launches_exclude_unknown_age(monkeypatch):
     dated = {"address_hash": "0xdated", "name": "Dated"}
     unknown = {"address_hash": "0xunknown", "name": "Unknown"}
-    _stub_pairs(monkeypatch, {"0xdated": _pair(NOW_MS - 5 * DAY_MS, 5_000)})
+    _stub_pairs(monkeypatch, {"0xdated": _pair(NOW_MS - 2 * DAY_MS, 5_000)})
     out = _run(rug_analyzer._select_opportunity_candidates([unknown, dated], limit=5))
     assert [t["address_hash"] for t in out] == ["0xdated"]
 
