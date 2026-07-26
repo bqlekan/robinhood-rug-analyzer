@@ -70,20 +70,12 @@ def _stub_deep(monkeypatch):
     return promoted
 
 
-def _stub_list(monkeypatch, tokens):
-    async def fake_list(limit=50):
-        return tokens
+def _stub_discovery(monkeypatch, tokens):
+    """Stub _discover_recent_candidates to return the given tokens directly."""
+    async def fake_discover(limit):
+        return tokens[:limit]
 
-    monkeypatch.setattr(rug_analyzer.blockscout_client, "list_tokens", fake_list)
-
-    # Give every token a recent DexScreener pair so candidate selection keeps them.
-    import time
-    now_ms = int(time.time() * 1000)
-
-    async def fake_pairs(address):
-        return [{"pairCreatedAt": now_ms - 86_400_000, "liquidity": {"usd": 10_000}}]
-
-    monkeypatch.setattr(rug_analyzer, "fetch_token_pairs", fake_pairs)
+    monkeypatch.setattr(rug_analyzer, "_discover_recent_candidates", fake_discover)
 
 
 def _run(coro):
@@ -92,7 +84,7 @@ def _run(coro):
 
 def test_high_holder_token_is_skipped(monkeypatch):
     promoted = _stub_deep(monkeypatch)
-    _stub_list(monkeypatch, [{"address_hash": "0xsafe", "holders_count": 5000, "name": "Safe"}])
+    _stub_discovery(monkeypatch, [{"address_hash": "0xsafe", "holders_count": 5000, "name": "Safe"}])
     resp = _run(rug_analyzer.scan_and_rank(1))
     assert "0xsafe" not in promoted  # skipped, no deep fetch
     assert resp.ranked_tokens[0].top_signal.startswith("Deep analysis skipped")
@@ -100,14 +92,14 @@ def test_high_holder_token_is_skipped(monkeypatch):
 
 def test_few_holders_token_is_promoted(monkeypatch):
     promoted = _stub_deep(monkeypatch)
-    _stub_list(monkeypatch, [{"address_hash": "0xrisky", "holders_count": 12, "name": "Risky"}])
+    _stub_discovery(monkeypatch, [{"address_hash": "0xrisky", "holders_count": 12, "name": "Risky"}])
     _run(rug_analyzer.scan_and_rank(1))
     assert "0xrisky" in promoted  # suspicious -> deep analysis
 
 
 def test_unknown_holder_count_is_promoted(monkeypatch):
     promoted = _stub_deep(monkeypatch)
-    _stub_list(monkeypatch, [{"address_hash": "0xunknown", "name": "NoHolderData"}])
+    _stub_discovery(monkeypatch, [{"address_hash": "0xunknown", "name": "NoHolderData"}])
     _run(rug_analyzer.scan_and_rank(1))
     assert "0xunknown" in promoted  # uncertainty -> deep analysis
 
@@ -115,7 +107,7 @@ def test_unknown_holder_count_is_promoted(monkeypatch):
 def test_holder_floor_edge_cases(monkeypatch):
     floor = settings.scan_established_holder_floor
     promoted = _stub_deep(monkeypatch)
-    _stub_list(
+    _stub_discovery(
         monkeypatch,
         [
             {"address_hash": "0xat", "holders_count": floor},       # exactly floor -> skip
@@ -130,7 +122,7 @@ def test_holder_floor_edge_cases(monkeypatch):
 def test_tiering_disabled_promotes_everything(monkeypatch):
     monkeypatch.setattr(settings, "scan_tiering_enabled", False)
     promoted = _stub_deep(monkeypatch)
-    _stub_list(monkeypatch, [{"address_hash": "0xsafe", "holders_count": 5000}])
+    _stub_discovery(monkeypatch, [{"address_hash": "0xsafe", "holders_count": 5000}])
     _run(rug_analyzer.scan_and_rank(1))
     assert "0xsafe" in promoted  # tiering off -> deep analysis even for safe token
 
@@ -139,6 +131,6 @@ def test_floor_override_changes_promotion(monkeypatch):
     # Raise the floor above the token's holder count -> it should now promote.
     monkeypatch.setattr(settings, "scan_established_holder_floor", 10_000)
     promoted = _stub_deep(monkeypatch)
-    _stub_list(monkeypatch, [{"address_hash": "0xmid", "holders_count": 5000}])
+    _stub_discovery(monkeypatch, [{"address_hash": "0xmid", "holders_count": 5000}])
     _run(rug_analyzer.scan_and_rank(1))
     assert "0xmid" in promoted

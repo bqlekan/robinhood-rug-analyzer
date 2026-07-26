@@ -20,7 +20,7 @@ from app.models.token import is_valid_address
 from app.core import chains
 from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, honeypot_sim, launchpad_registry, rpc_client, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
-from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
+from app.services.dexscreener_client import choose_best_pair, fetch_latest_pairs, fetch_token_pairs
 from app.services.lore_client import build_lore
 from app.services.scoring import LIMITATIONS, score_token, score_token_light
 
@@ -561,64 +561,44 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     )
 
 
-async def _select_opportunity_candidates(tokens: list[dict], limit: int) -> list[dict]:
-    """Reorder list_tokens candidates so fresh, tradeable launches win the slots (D1).
+async def _discover_recent_candidates(limit: int) -> list[dict]:
+    """Discover recent-launch candidates from DexScreener newest-pairs endpoint.
 
-    Blockscout /tokens is ordered by market cap, so the raw list is dominated by old
-    established assets. For the bounded candidate pool we read each token's DexScreener
-    pair once (a free source the deep pipeline reads anyway -> the short-TTL market cache
-    serves the later analyze from this same fetch, so no extra scan latency) and:
-      - drop launches older than scan_max_launch_age_days,
-      - drop dead/abandoned tokens below scan_min_candidate_liquidity_usd,
-      - drop tokens whose launch age cannot be determined from any source,
-      - sort the survivors newest-launch-first.
-
-    If fewer than `limit` recent tokens exist, fewer results are returned.
+    Returns token dicts keyed by ``address_hash`` (matching the shape scan_one expects)
+    sorted newest-first, filtered by launch age and minimum liquidity, deduplicated.
     """
-    pool = tokens[: max(limit, settings.scan_candidate_pool_size)]
+    pairs = await fetch_latest_pairs()
     max_age_ms = settings.scan_max_launch_age_days * 86_400_000
     min_liq = settings.scan_min_candidate_liquidity_usd
 
-    async def enrich(token: dict) -> tuple[dict, int | None, float | None] | None:
-        addr = token.get("address_hash")
-        if not addr:
-            return None
-        try:
-            best = choose_best_pair(await fetch_token_pairs(addr))
-        except Exception as exc:  # discovery is best-effort; never fail the scan
-            logger.warning("Candidate enrich failed for %s: %s", addr, exc)
-            best = None
-        created = to_int((best or {}).get("pairCreatedAt")) if best else None
-        liq = to_float((best.get("liquidity") or {}).get("usd")) if best else None
-        # Dead/abandoned: has a market but liquidity is below the floor -> skip.
-        if best is not None and min_liq > 0 and liq is not None and liq < min_liq:
-            return None
-        # Secondary age source: contract creation-tx timestamp via Blockscout.
+    seen: set[str] = set()
+    candidates: list[dict] = []
+    for p in pairs:
+        created = to_int(p.get("pairCreatedAt"))
         if created is None:
-            try:
-                info = await blockscout_client.get_address_info(addr)
-                tx_hash = (info or {}).get("creation_transaction_hash")
-                if tx_hash:
-                    iso_ts = await blockscout_client.get_transaction_timestamp(tx_hash)
-                    if iso_ts:
-                        from datetime import datetime, timezone
-                        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
-                        created = int(dt.timestamp() * 1000)
-            except Exception as exc:
-                logger.warning("Candidate creation-tx fallback failed for %s: %s", addr, exc)
-        # Unknown age after both sources -> exclude.
-        if created is None:
-            return None
-        # Too old: launch beyond the window -> skip.
+            continue
         if max_age_ms > 0:
             _, now_ms = _pair_age_ms(created)
             if now_ms - created > max_age_ms:
-                return None
-        return token, created, liq
-
-    enriched = [r for r in await asyncio.gather(*(enrich(t) for t in pool)) if r is not None]
-    enriched.sort(key=lambda r: r[1], reverse=True)
-    return [r[0] for r in enriched][:limit]
+                continue
+        liq = to_float((p.get("liquidity") or {}).get("usd"))
+        if min_liq > 0 and liq is not None and liq < min_liq:
+            continue
+        base = p.get("baseToken") or {}
+        addr = base.get("address")
+        if not addr or addr.lower() in seen:
+            continue
+        if launchpad_registry.is_established_token(base.get("symbol"), base.get("name")):
+            continue
+        seen.add(addr.lower())
+        candidates.append({
+            "address_hash": addr,
+            "name": base.get("name"),
+            "symbol": base.get("symbol"),
+        })
+        if len(candidates) >= limit:
+            break
+    return candidates
 
 
 def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
@@ -629,27 +609,17 @@ def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
 
 
 async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
-    """Pull active Robinhood Chain tokens, analyze each, and rank by risk score."""
+    """Pull recent Robinhood Chain token launches, analyze each, and rank by risk score."""
     limit = min(limit, settings.scan_max_tokens)
-    # Pull extra to leave headroom for the established-coin filter (USDT, WETH, etc.).
-    tokens = await blockscout_client.list_tokens(limit=limit * 3)
-    # Skip well-known assets so the scanner focuses on newer creations.
-    tokens = [
-        t for t in tokens
-        if not launchpad_registry.is_established_token(t.get("symbol"), t.get("name"))
-    ]
-    # D1: prefer recently-launched, still-tradeable tokens for the candidate slots.
-    # Old established coins otherwise dominate (Blockscout orders /tokens by market cap).
-    if settings.scan_prefer_recent_launches:
-        tokens = await _select_opportunity_candidates(tokens, limit)
-    else:
-        tokens = tokens[:limit]
+    # Discover candidates directly from DexScreener newest-pairs (sorted newest-first,
+    # filtered by launch age + liquidity floor, deduplicated, established tokens skipped).
+    tokens = await _discover_recent_candidates(limit)
 
     if not tokens:
         return ScanResponse(
             chain=chains.active().chain_name,
             status="no_tokens",
-            message="Could not retrieve token list from Blockscout.",
+            message="No recent launches found on DexScreener within the configured window.",
             analyzed=0,
             ranked_tokens=[],
             limitations=LIMITATIONS,
