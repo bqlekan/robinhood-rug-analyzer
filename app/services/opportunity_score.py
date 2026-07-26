@@ -137,6 +137,20 @@ def _score_dev_reputation(result: TokenAnalysisResponse) -> SignalResult | None:
     return SignalResult(name="dev_reputation", value=v, positive=positive, detail=detail)
 
 
+def _score_wallet_reputation(result: TokenAnalysisResponse) -> SignalResult | None:
+    reps = result.wallet_reputations
+    if not reps:
+        return None
+    avg = sum(r.score for r in reps) / len(reps)
+    v = max(0, min(100, int(avg)))
+    positive = v >= 50
+    if positive:
+        detail = f"Avg wallet reputation {v}/100 ({len(reps)} wallets)"
+    else:
+        detail = f"Low wallet reputation ({v}/100, {len(reps)} wallets)"
+    return SignalResult(name="wallet_reputation", value=v, positive=positive, detail=detail)
+
+
 # Module-level scorer registry. Append here to add future signals.
 SCORERS: list[Scorer] = [
     _score_risk,
@@ -147,6 +161,7 @@ SCORERS: list[Scorer] = [
     _score_honeypot,
     _score_verified,
     _score_dev_reputation,
+    _score_wallet_reputation,
 ]
 
 

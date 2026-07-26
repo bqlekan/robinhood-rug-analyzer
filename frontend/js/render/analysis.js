@@ -101,6 +101,32 @@ function renderDevReputation(rep) {
     </section>`;
 }
 
+function renderWalletReputations(reps) {
+  if (!reps || !reps.length) return "";
+  const cards = reps
+    .map((r) => {
+      const ev = (r.evidence || [])
+        .map((e) => `<li class="signal${e.startsWith("+") ? "" : " signal-medium"}">${esc(e)}</li>`)
+        .join("");
+      return `
+        <div class="analysis-summary" style="border-left: 5px solid ${repColor(r.score)}; margin-bottom: 0.5em;">
+          ${card("Score", `${r.score}/100`, r.confidence)}
+          ${card("Address", `<code class="addr-inline">${esc(shortAddr(r.address))}</code>`)}
+          ${r.wallet_age_days != null ? card("Age", `${Math.round(r.wallet_age_days)}d`) : ""}
+          ${card("Tokens", esc(r.token_interactions))}
+          ${card("Surviving", esc(r.surviving_projects))}
+          ${r.rugs_entered ? card("Rugs", esc(r.rugs_entered)) : ""}
+        </div>
+        ${ev ? `<ul class="signals">${ev}</ul>` : ""}`;
+    })
+    .join("");
+  return `
+    <section>
+      <h2>Smart Wallet Reputations</h2>
+      ${cards}
+    </section>`;
+}
+
 export function renderDevDetail(d) {
   if (!d) return "";
   const launched = (d.launched_tokens || [])
@@ -172,6 +198,7 @@ export function renderAnalysis(data, resultEl) {
     </section>
 
     ${renderDevReputation(data.developer_reputation)}
+    ${renderWalletReputations(data.wallet_reputations)}
     ${renderInsiders(data.insiders, data.watchlist_hits)}
     ${renderDevDetail(d)}
     ${renderLore(data.lore)}

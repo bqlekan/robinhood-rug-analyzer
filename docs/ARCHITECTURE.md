@@ -273,6 +273,21 @@ are the per-tab feature modules. Styles are split into `css/{tokens,base,compone
 - Failure modes: provider errors logged and skipped; no provider failure breaks analysis. Missing
   deployer address produces a low-score result (no crash).
 
+**`app/services/smart_wallet_reputation.py`** — Smart Wallet Reputation engine.
+- Public: `evaluate(address: str) -> SmartWalletReputationResult`.
+- Dependencies: `blockscout_client`, `cache`, `models.token`.
+- Architecture: modular provider pattern (`WalletReputationProvider` protocol). `OnChainWalletProvider`
+  gathers wallet age, transaction count, token interactions, entry timings, surviving projects, and
+  dormancy via Blockscout. Future providers implement the same protocol and register in `_PROVIDERS`.
+  Cached per wallet address (in-process `TTLCache`).
+- Signals computed: wallet age, total transactions, token interactions, launches entered, average
+  entry timing, average holding period, surviving projects, rugs entered, successful launches,
+  early-entry frequency, consistency score, dormancy. Produces a 0-100 score with evidence.
+- Integration: called from `analyze_token_contract` for each smart wallet hit; results attached to
+  `TokenAnalysisResponse.wallet_reputations`. The Opportunity Score engine reads the average via
+  `_score_wallet_reputation` (registered in `SCORERS`, weighted as `wallet_reputation` in config).
+- Failure modes: provider errors logged and skipped; missing data yields a baseline score.
+
 ### 3.3 Data clients and infrastructure
 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.

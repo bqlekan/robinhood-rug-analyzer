@@ -400,6 +400,26 @@ class DeveloperReputationResult(BaseModel):
     funding_source: str | None = None
 
 
+class SmartWalletReputationResult(BaseModel):
+    score: int
+    confidence: str = "medium"
+    evidence: list[str] = Field(default_factory=list)
+    address: str
+    wallet_age_days: float | None = None
+    total_transactions: int | None = None
+    token_interactions: int = 0
+    launches_entered: int = 0
+    avg_entry_timing_hours: float | None = None
+    avg_holding_period_days: float | None = None
+    surviving_projects: int = 0
+    rugs_entered: int = 0
+    successful_launches: int = 0
+    early_entry_frequency: float | None = None
+    consistency_score: float | None = None
+    active: bool = True
+    dormant_days: float | None = None
+
+
 class TokenAnalysisResponse(BaseModel):
     contract_address: str
     chain: str
@@ -422,6 +442,7 @@ class TokenAnalysisResponse(BaseModel):
     watchlist_hits: list[WatchlistHit] = Field(default_factory=list)
     trend: TokenTrend | None = None
     developer_reputation: DeveloperReputationResult | None = None
+    wallet_reputations: list[SmartWalletReputationResult] = Field(default_factory=list)
     analysis: RugAnalysis
 
 
