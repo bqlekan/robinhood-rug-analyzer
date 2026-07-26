@@ -76,6 +76,15 @@ def _stub_list(monkeypatch, tokens):
 
     monkeypatch.setattr(rug_analyzer.blockscout_client, "list_tokens", fake_list)
 
+    # Give every token a recent DexScreener pair so candidate selection keeps them.
+    import time
+    now_ms = int(time.time() * 1000)
+
+    async def fake_pairs(address):
+        return [{"pairCreatedAt": now_ms - 86_400_000, "liquidity": {"usd": 10_000}}]
+
+    monkeypatch.setattr(rug_analyzer, "fetch_token_pairs", fake_pairs)
+
 
 def _run(coro):
     return asyncio.run(coro)

@@ -570,11 +570,10 @@ async def _select_opportunity_candidates(tokens: list[dict], limit: int) -> list
     serves the later analyze from this same fetch, so no extra scan latency) and:
       - drop launches older than scan_max_launch_age_days,
       - drop dead/abandoned tokens below scan_min_candidate_liquidity_usd,
+      - drop tokens whose launch age cannot be determined from any source,
       - sort the survivors newest-launch-first.
 
-    Graceful fallback: a token whose launch age is unknown (no market pair) is kept and
-    ordered after the dated launches, so if no ages resolve at all the original order is
-    preserved and behaviour matches the prior scanner.
+    If fewer than `limit` recent tokens exist, fewer results are returned.
     """
     pool = tokens[: max(limit, settings.scan_candidate_pool_size)]
     max_age_ms = settings.scan_max_launch_age_days * 86_400_000
@@ -594,19 +593,32 @@ async def _select_opportunity_candidates(tokens: list[dict], limit: int) -> list
         # Dead/abandoned: has a market but liquidity is below the floor -> skip.
         if best is not None and min_liq > 0 and liq is not None and liq < min_liq:
             return None
-        # Too old: has a datable launch beyond the window -> skip.
-        if created is not None and max_age_ms > 0:
+        # Secondary age source: contract creation-tx timestamp via Blockscout.
+        if created is None:
+            try:
+                info = await blockscout_client.get_address_info(addr)
+                tx_hash = (info or {}).get("creation_transaction_hash")
+                if tx_hash:
+                    iso_ts = await blockscout_client.get_transaction_timestamp(tx_hash)
+                    if iso_ts:
+                        from datetime import datetime, timezone
+                        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+                        created = int(dt.timestamp() * 1000)
+            except Exception as exc:
+                logger.warning("Candidate creation-tx fallback failed for %s: %s", addr, exc)
+        # Unknown age after both sources -> exclude.
+        if created is None:
+            return None
+        # Too old: launch beyond the window -> skip.
+        if max_age_ms > 0:
             _, now_ms = _pair_age_ms(created)
             if now_ms - created > max_age_ms:
                 return None
         return token, created, liq
 
     enriched = [r for r in await asyncio.gather(*(enrich(t) for t in pool)) if r is not None]
-    # Newest launch first; unknown-age tokens (created is None) sort last (fallback tail).
-    enriched.sort(key=lambda r: r[1] if r[1] is not None else -1, reverse=True)
-    selected = [r[0] for r in enriched][:limit]
-    # Total fallback: enrichment resolved nothing usable -> original order.
-    return selected or tokens[:limit]
+    enriched.sort(key=lambda r: r[1], reverse=True)
+    return [r[0] for r in enriched][:limit]
 
 
 def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
