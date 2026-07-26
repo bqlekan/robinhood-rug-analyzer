@@ -13,7 +13,7 @@ from app.services.http import get_client
 logger = logging.getLogger(__name__)
 
 DEXSCREENER_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
-DEXSCREENER_LATEST_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/{chain_id}"
+DEXSCREENER_SEARCH_URL = "https://api.dexscreener.com/latest/dex/search"
 
 # Short-TTL cache (matches the blockscout market cache): collapses duplicate pair
 # reads across a scan burst / rapid re-analysis without serving stale market data to
@@ -72,17 +72,20 @@ def choose_best_pair(pairs: list[dict[str, Any]]) -> dict[str, Any] | None:
 async def fetch_latest_pairs() -> list[dict[str, Any]]:
     """Fetch the newest pairs on the active chain from DexScreener (sorted newest-first)."""
     chain_id = chains.active().dexscreener_chain
-    url = DEXSCREENER_LATEST_PAIRS_URL.format(chain_id=chain_id)
 
     try:
-        response = await get_client().get(url, headers={"Accept": "application/json"})
+        response = await get_client().get(
+            DEXSCREENER_SEARCH_URL,
+            params={"q": chain_id},
+            headers={"Accept": "application/json"},
+        )
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
-        logger.warning("DexScreener latest-pairs request failed: %s", exc)
+        logger.warning("DexScreener search request failed: %s", exc)
         return []
     except ValueError as exc:
-        logger.warning("DexScreener latest-pairs returned invalid JSON: %s", exc)
+        logger.warning("DexScreener search returned invalid JSON: %s", exc)
         return []
 
     pairs = payload.get("pairs") or []
