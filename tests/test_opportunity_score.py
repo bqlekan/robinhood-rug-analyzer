@@ -254,9 +254,10 @@ class TestScoreOpportunity:
         assert opp.alpha_score == 90  # 100 - 10
 
     def test_alpha_levels(self):
-        for risk, expected in [(90, "low"), (60, "medium"), (30, "high"), (10, "excellent")]:
+        # smart_wallets always fires (value=0 on empty hits), so both risk + smart_wallets
+        # contribute.  Compute expected levels accordingly.
+        for risk, expected in [(90, "low"), (60, "medium"), (30, "medium"), (10, "high")]:
             r = _base_result(analysis=RugAnalysis(risk_score=risk, risk_level="low", signals=[], data_sources=[], limitations=[]))
-            # Only risk signal active (no other data) → score ≈ 100-risk
             opp = score_opportunity(r)
             assert opp.alpha_level == expected, f"risk={risk} → {opp.alpha_level}, expected {expected}"
 

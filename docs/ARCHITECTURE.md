@@ -255,6 +255,24 @@ are the per-tab feature modules. Styles are split into `css/{tokens,base,compone
 - Extension: compute cross-token `surviving_tokens` to activate smart-wallet promotion (see section 15).
 - Failure modes: persistence wrapped in try/except (never blocks analysis); `refresh_watchlisted` uses `gather(return_exceptions=True)`. Note: in single-token analysis the `smart` list is always empty (max proxy 65 < threshold 70) — a documented, designed inert state.
 
+**`app/services/developer_reputation.py`** — Developer Reputation Intelligence engine.
+- Public: `evaluate(result: TokenAnalysisResponse) -> DeveloperReputationResult | None`.
+- Dependencies: `blockscout_client`, `cache`, `models.token`.
+- Config: `deployer_reputation_ttl_hours` (cache TTL), `transfer_scan_pages` (tx scan depth).
+- Architecture: modular provider pattern (`ReputationProvider` protocol). `OnChainProvider` gathers
+  wallet age, total contracts deployed, verified contract count, holder counts, and funding source
+  via Blockscout. Future providers (GitHub, ENS, social) implement the same protocol and register
+  in `_PROVIDERS`; scoring aggregates additively with no interface change. Cached per deployer address
+  (in-process `TTLCache`) so tokens from the same creator skip re-gathering.
+- Signals computed: wallet age, total/token contracts deployed, verified contracts, launchpad usage,
+  abandoned launches, healthy liquidity launches, meaningful holder counts, surviving contracts,
+  wallet activity, funding source. Produces a 0-100 reputation score with human-readable evidence.
+- Integration: called at the end of `analyze_token_contract`; result attached to
+  `TokenAnalysisResponse.developer_reputation`. The Opportunity Score engine reads it via
+  `_score_dev_reputation` (registered in `SCORERS`, weighted as `dev_reputation` in config).
+- Failure modes: provider errors logged and skipped; no provider failure breaks analysis. Missing
+  deployer address produces a low-score result (no crash).
+
 ### 3.3 Data clients and infrastructure
 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.

@@ -102,6 +102,7 @@ class Settings(BaseSettings):
         "holder_quality": 10,
         "honeypot": 5,
         "verified": 5,
+        "dev_reputation": 10,
     }
     opportunity_exclude_risk_floor: int = 70
     opportunity_exclude_alpha_floor: int = 30

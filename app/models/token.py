@@ -383,6 +383,23 @@ class RugAnalysis(BaseModel):
     confidence_level: str = "high"  # low | medium | high
 
 
+class DeveloperReputationResult(BaseModel):
+    score: int
+    evidence: list[str] = Field(default_factory=list)
+    deployer: str | None = None
+    wallet_age_days: float | None = None
+    total_contracts_deployed: int = 0
+    token_contracts_deployed: int = 0
+    verified_contracts: int = 0
+    launchpad_deployments: int = 0
+    abandoned_launches: int = 0
+    healthy_liquidity_launches: int = 0
+    meaningful_holder_launches: int = 0
+    surviving_contracts: int = 0
+    wallet_transaction_count: int | None = None
+    funding_source: str | None = None
+
+
 class TokenAnalysisResponse(BaseModel):
     contract_address: str
     chain: str
@@ -404,6 +421,7 @@ class TokenAnalysisResponse(BaseModel):
     insiders: list[InsiderWallet] = Field(default_factory=list)
     watchlist_hits: list[WatchlistHit] = Field(default_factory=list)
     trend: TokenTrend | None = None
+    developer_reputation: DeveloperReputationResult | None = None
     analysis: RugAnalysis
 
 

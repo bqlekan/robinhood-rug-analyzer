@@ -124,6 +124,19 @@ def _score_verified(result: TokenAnalysisResponse) -> SignalResult | None:
     return SignalResult(name="verified", value=v, positive=verified, detail=detail)
 
 
+def _score_dev_reputation(result: TokenAnalysisResponse) -> SignalResult | None:
+    rep = result.developer_reputation
+    if rep is None:
+        return None
+    v = max(0, min(100, rep.score))
+    positive = v >= 50
+    if positive:
+        detail = f"Developer reputation {v}/100"
+    else:
+        detail = f"Low developer reputation ({v}/100)"
+    return SignalResult(name="dev_reputation", value=v, positive=positive, detail=detail)
+
+
 # Module-level scorer registry. Append here to add future signals.
 SCORERS: list[Scorer] = [
     _score_risk,
@@ -133,6 +146,7 @@ SCORERS: list[Scorer] = [
     _score_holder_quality,
     _score_honeypot,
     _score_verified,
+    _score_dev_reputation,
 ]
 
 

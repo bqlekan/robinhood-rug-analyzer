@@ -18,7 +18,7 @@ from app.models.token import (
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
 from app.core import chains
-from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, honeypot_sim, launchpad_registry, rpc_client, snapshot_store, wallet_intel, watchlist_store
+from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, developer_reputation, honeypot_sim, launchpad_registry, rpc_client, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_latest_pairs, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -537,7 +537,7 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
             holder_count=holder_distribution.holder_count,
         )
 
-    return TokenAnalysisResponse(
+    result = TokenAnalysisResponse(
         contract_address=normalized,
         chain=chains.active().chain_name,
         status="analysis_completed",
@@ -560,6 +560,10 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         buy_timing=buy_timing,
         trend=trend,
     )
+
+    result.developer_reputation = await developer_reputation.evaluate(result)
+
+    return result
 
 
 async def _discover_recent_candidates(limit: int) -> list[dict]:

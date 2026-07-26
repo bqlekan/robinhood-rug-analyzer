@@ -76,6 +76,31 @@ export function renderInsiders(insiders, hits) {
     </section>`;
 }
 
+function repColor(score) {
+  const s = Math.max(0, Math.min(100, score ?? 0));
+  const hue = (130 * s) / 100;
+  return `hsl(${hue}, 75%, 40%)`;
+}
+
+function renderDevReputation(rep) {
+  if (!rep) return "";
+  const lines = (rep.evidence || [])
+    .map((e) => `<li class="signal${e.startsWith("+") ? "" : " signal-medium"}">${esc(e)}</li>`)
+    .join("");
+  return `
+    <section>
+      <h2>Developer Reputation</h2>
+      <div class="analysis-summary" style="border-left: 5px solid ${repColor(rep.score)}">
+        ${card("Reputation Score", `${rep.score}/100`)}
+        ${rep.wallet_age_days != null ? card("Wallet Age", `${Math.round(rep.wallet_age_days)}d`) : ""}
+        ${card("Contracts Deployed", esc(rep.total_contracts_deployed))}
+        ${card("Verified", esc(rep.verified_contracts))}
+        ${card("Abandoned", esc(rep.abandoned_launches))}
+      </div>
+      ${lines ? `<ul class="signals">${lines}</ul>` : ""}
+    </section>`;
+}
+
 export function renderDevDetail(d) {
   if (!d) return "";
   const launched = (d.launched_tokens || [])
@@ -146,6 +171,7 @@ export function renderAnalysis(data, resultEl) {
       <ul class="signals">${renderSignals(a.signals)}</ul>
     </section>
 
+    ${renderDevReputation(data.developer_reputation)}
     ${renderInsiders(data.insiders, data.watchlist_hits)}
     ${renderDevDetail(d)}
     ${renderLore(data.lore)}
