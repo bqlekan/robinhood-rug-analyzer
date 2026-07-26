@@ -77,6 +77,7 @@ It has two broad halves that share infrastructure but run independently:
 | **Scheduler** | `main.py` lifespan | Three asyncio background loops (`_watchlist_refresh_loop`, `_token_monitor_loop`, `_kol_scheduler_loop`), each enable-flag gated. M25 added the KOL capture scheduler (`kol_scheduler`). |
 | **Notification Layer** | `notifications.py` (Deliverable H + M26 transports) | Consumes intel events + `ProjectIntelligence`, forwards alert-worthy ones to configured providers. Sinks: `log`, `memory`, and the M26 HTTP transports `webhook` / `telegram` / `discord`. Opt-in, rule-filtered, retried, deduped, failure-isolated. See §6.1. |
 | **Alert Engine (M27)** | `alert_engine.py`, `models/alerts.py` | Connects existing events (`MonitorEvent`, `FollowEvent`, `KolIntelEvent`) to ten configurable alert types (per-alert + per-token rules, severity, cooldown, dedupe, aggregation, human-readable messages); delivers survivors through the reused notification providers. No new intelligence/events. Opt-in (`alerts_enabled`). See §6.2. |
+| **Alpha Timeline** | `alpha_timeline.py` | Pure, post-analysis layer that converts `TokenAnalysisResponse` into a chronological event story with a narrative summary. Modular provider registry — each provider mines events from one analysis dimension (launch, liquidity, ownership, developer, holders, smart wallets, insiders, clusters, honeypot, network, wallet reputation, opportunity). No new data fetches; no score mutation. See §9.2. |
 | **AI Intelligence Layer** | *(planned)* | `ProjectIntelligence` + timelines are shaped as self-describing input for a future AI reasoning stage. |
 
 See [§17](#17-mermaid-diagrams) for the overall architecture diagram.
@@ -792,6 +793,36 @@ There is **no alpha score in the rug-risk model**. The only "alpha" reference
 is `kol_score_weights["alpha"]`, an optional KOL scoring component that
 contributes nothing until an external alpha scorer is supplied — a deliberate,
 inert extension point, not an implemented feature.
+
+### 9.6 Alpha Timeline Engine
+
+**`app/services/alpha_timeline.py`** — pure, post-analysis layer that converts
+a completed `TokenAnalysisResponse` into a chronological event story.
+
+- **Architecture:** modular provider registry (`PROVIDERS` list). Each provider
+  is a function `(TokenAnalysisResponse) → list[TimelineEvent]` that mines
+  events from one analysis dimension. Adding a new timeline source = appending
+  one function to the registry — no engine change.
+- **Providers (13):** launch, liquidity, ownership, developer, holders, smart
+  wallets, insiders, clusters, honeypot, network, wallet reputation,
+  opportunity, KOL (stub for future integration).
+- **Pipeline:** collect all provider events → deduplicate (title + category +
+  evidence) → sort (timestamped first, then by severity) → generate summary.
+- **Event model:** `TimelineEvent` (timestamp, title, category, severity,
+  confidence, source, evidence, impact, explanation). 14 categories: Launch,
+  Developer, Liquidity, Smart Wallet, Insider, Security, Ownership, Contract,
+  Holder Growth, Network, KOL, Opportunity, Risk, Whale.
+- **Summary model:** `TimelineSummary` (launch_quality, developer_behaviour,
+  liquidity_evolution, community_growth, smart_money, narrative). Generated
+  from the analysis outputs — a human-readable one-paragraph story.
+- **Design rules:** no new data fetches (consumes only cached analysis); no
+  score mutation (explains, never changes, risk/opportunity scores); pure and
+  lightweight (no I/O, no side effects).
+- **Wired at:** `rug_analyzer.analyze_token_contract()`, after all analysis
+  (scoring, reputation, network) but before the response return. The
+  `TokenAnalysisResponse.timeline` field is `AlphaTimeline | None`.
+- **Extension:** future providers (KOL events, on-chain governance, price
+  action) register in the `PROVIDERS` list without modifying existing code.
 
 ---
 

@@ -18,7 +18,7 @@ from app.models.token import (
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
 from app.core import chains
-from app.services import analyzers, blockscout_client, contract_intel, contract_privileges, developer_network, developer_reputation, honeypot_sim, launchpad_registry, rpc_client, smart_wallet_reputation, snapshot_store, wallet_intel, watchlist_store
+from app.services import alpha_timeline, analyzers, blockscout_client, contract_intel, contract_privileges, developer_network, developer_reputation, honeypot_sim, launchpad_registry, rpc_client, smart_wallet_reputation, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_latest_pairs, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -571,6 +571,9 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     if smart_hits:
         rep_tasks = [smart_wallet_reputation.evaluate(h.address) for h in smart_hits]
         result.wallet_reputations = await asyncio.gather(*rep_tasks)
+
+    # Alpha Timeline: convert all analysis outputs into a chronological story.
+    result.timeline = alpha_timeline.build_timeline(result)
 
     return result
 

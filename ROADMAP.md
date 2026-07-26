@@ -1329,6 +1329,44 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### Alpha Timeline Engine (post-Developer Network) ✅ COMPLETE
+
+- **Goal:** Convert raw blockchain intelligence into a chronological story. Instead of showing dozens
+  of unrelated metrics, users understand exactly how a token evolved — from contract deployment through
+  liquidity, ownership, developer activity, smart wallet entries, and risk changes. The timeline
+  explains WHY a token became a good (or bad) opportunity.
+- **Status:** ✅ **COMPLETE** (2026-07-26). _As built:_
+  - New `app/services/alpha_timeline.py` — modular provider pattern (`TimelineProvider` protocol).
+    13 providers mine events from existing analysis dimensions: launch, liquidity, ownership,
+    developer, holders, smart wallets, insiders, clusters, honeypot, network, wallet reputation,
+    opportunity, KOL (stub). Future providers register in the `PROVIDERS` list — no engine change.
+  - Event model: `TimelineEvent` (timestamp, title, category, severity, confidence, source, evidence,
+    impact, human explanation). 14 event categories. Deduplication by (title, category, evidence).
+    Sorted: timestamped first, then by severity.
+  - Summary model: `TimelineSummary` (launch_quality, developer_behaviour, liquidity_evolution,
+    community_growth, smart_money, narrative). Generated from analysis outputs as a human-readable
+    one-paragraph story.
+  - Timeline does NOT change Opportunity Score or Risk Score — it explains them. When a score is
+    notable, the timeline records why.
+  - Pure and lightweight: no new data fetches, no I/O, no side effects. Consumes only cached
+    analysis outputs already computed in the pipeline.
+  - Wired into `rug_analyzer.analyze_token_contract()` after all analysis (scoring, reputation,
+    network) completes. `TokenAnalysisResponse.timeline` field is `AlphaTimeline | None`.
+  - Frontend: "Alpha Timeline" section on the token analysis page showing summary cards (launch
+    quality, developer behaviour, liquidity evolution, community growth, smart money), narrative
+    text, and chronological event cards with category icons, severity badges, confidence levels,
+    expandable evidence, impact statements, and human explanations.
+  - Tests: 66 tests covering empty timeline, single/multiple events per provider, ordering,
+    deduplication, missing timestamps, confidence calculation, summary generation (all 5 axes),
+    narrative assembly, API compatibility, serialization, frontend data shape, performance (purity,
+    no side effects), and provider registry validation.
+  - **709 tests passing (66 new + 643 existing, zero regressions).**
+- **Files:** `app/services/alpha_timeline.py`, `app/models/token.py`, `app/services/rug_analyzer.py`,
+  `frontend/js/render/analysis.js`, `tests/test_alpha_timeline.py`, `docs/ARCHITECTURE.md`,
+  `docs/DATA_FLOW.md`, `ROADMAP.md`.
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.

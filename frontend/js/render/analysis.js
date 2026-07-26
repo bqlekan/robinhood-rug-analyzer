@@ -177,6 +177,50 @@ export function renderDevDetail(d) {
     </section>`;
 }
 
+const _SEV_ICON = { critical: "⛔", high: "⚠️", medium: "ℹ️", low: "•", info: "✔️" };
+const _CAT_ICON = {
+  Launch: "🚀", Developer: "👤", Liquidity: "💧", "Smart Wallet": "🧠",
+  Insider: "🕵️", Security: "🔒", Ownership: "📜", Contract: "📄",
+  "Holder Growth": "📈", Network: "🌐", KOL: "🌟", Opportunity: "⭐",
+  Risk: "⚠️", Whale: "🐳",
+};
+
+function renderTimeline(tl) {
+  if (!tl) return "";
+  const s = tl.summary || {};
+  const summaryHtml = `
+    <div class="analysis-summary" style="border-left: 5px solid var(--accent, #4a90d9)">
+      ${card("Launch", esc((s.launch_quality || "unknown").toUpperCase()))}
+      ${card("Developer", esc((s.developer_behaviour || "unknown").replace(/_/g, " ").toUpperCase()))}
+      ${card("Liquidity", esc((s.liquidity_evolution || "unknown").toUpperCase()))}
+      ${card("Community", esc((s.community_growth || "unknown").replace(/_/g, " ").toUpperCase()))}
+      ${card("Smart Money", esc((s.smart_money || "none").toUpperCase()))}
+    </div>
+    ${s.narrative ? `<p class="lore-summary">${esc(s.narrative)}</p>` : ""}`;
+  const events = (tl.events || []);
+  if (!events.length) return `<section><h2>Alpha Timeline</h2>${summaryHtml}<p>No timeline events generated.</p></section>`;
+  const rows = events.map((e) => {
+    const sevIcon = _SEV_ICON[e.severity] || "";
+    const catIcon = _CAT_ICON[e.category] || "";
+    const sevClass = e.severity === "critical" || e.severity === "high" ? " signal-" + esc(e.severity) : "";
+    return `
+      <li class="signal${sevClass}">
+        <strong>${catIcon} ${esc(e.title)}</strong>
+        <span>${esc(e.category)} · ${esc((e.severity || "info").toUpperCase())} · ${esc((e.confidence || "medium").toUpperCase())} confidence</span>
+        ${e.explanation ? `<p>${esc(e.explanation)}</p>` : ""}
+        ${e.impact ? `<p class="lore-meta">Impact: ${esc(e.impact)}</p>` : ""}
+        ${e.evidence ? `<details><summary>Evidence</summary><p class="lore-meta">${esc(e.evidence)}</p></details>` : ""}
+        ${e.timestamp ? `<p class="lore-meta" style="font-size:0.8em">${esc(e.timestamp)}</p>` : ""}
+      </li>`;
+  }).join("");
+  return `
+    <section>
+      <h2>Alpha Timeline</h2>
+      ${summaryHtml}
+      <ul class="signals">${rows}</ul>
+    </section>`;
+}
+
 export function renderAnalysis(data, resultEl) {
   const m = data.market_data;
   const a = data.analysis;
@@ -228,6 +272,7 @@ export function renderAnalysis(data, resultEl) {
 
     ${renderDevReputation(data.developer_reputation)}
     ${renderDeveloperNetwork(data.developer_network)}
+    ${renderTimeline(data.timeline)}
     ${renderWalletReputations(data.wallet_reputations)}
     ${renderInsiders(data.insiders, data.watchlist_hits)}
     ${renderDevDetail(d)}

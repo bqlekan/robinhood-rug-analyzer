@@ -455,6 +455,35 @@ class SmartWalletReputationResult(BaseModel):
     dormant_days: float | None = None
 
 
+# --- Alpha Timeline ---
+
+
+class TimelineEvent(BaseModel):
+    timestamp: str | None = None
+    title: str
+    category: str
+    severity: str = "info"  # info | low | medium | high | critical
+    confidence: str = "medium"  # low | medium | high
+    source: str
+    evidence: str | None = None
+    impact: str | None = None
+    explanation: str | None = None
+
+
+class TimelineSummary(BaseModel):
+    launch_quality: str = "unknown"
+    developer_behaviour: str = "unknown"
+    liquidity_evolution: str = "unknown"
+    community_growth: str = "unknown"
+    smart_money: str = "unknown"
+    narrative: str = "Insufficient data."
+
+
+class AlphaTimeline(BaseModel):
+    events: list[TimelineEvent] = Field(default_factory=list)
+    summary: TimelineSummary = Field(default_factory=TimelineSummary)
+
+
 class TokenAnalysisResponse(BaseModel):
     contract_address: str
     chain: str
@@ -479,6 +508,7 @@ class TokenAnalysisResponse(BaseModel):
     developer_reputation: DeveloperReputationResult | None = None
     developer_network: DeveloperNetworkResult | None = None
     wallet_reputations: list[SmartWalletReputationResult] = Field(default_factory=list)
+    timeline: AlphaTimeline | None = None
     analysis: RugAnalysis
 
 

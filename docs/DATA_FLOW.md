@@ -37,6 +37,7 @@ sequenceDiagram
     RA->>RA: developer_reputation.evaluate(result)
     RA->>RA: developer_network.evaluate(result) [sibling holders, DexScreener, templates]
     RA->>RA: smart_wallet_reputation.evaluate(each smart wallet hit)
+    RA->>RA: alpha_timeline.build_timeline(result) [pure, no I/O]
     RA-->>C: TokenAnalysisResponse
 ```
 
@@ -45,7 +46,7 @@ validate → parallel fetch → market data → age → holders → transfers (o
 clusters → dev/creator → wallet intel → liquidity lock → launchpad (gated) →
 lore (optional) → honeypot → score → developer reputation → developer network
 intelligence (parallel sibling fetches: holders, DexScreener, contracts) → smart wallet
-reputations (parallel per smart wallet hit) → response.
+reputations (parallel per smart wallet hit) → alpha timeline (pure, no I/O) → response.
 
 **Scan path** (`POST /scan`): cap the limit → `list_tokens` → drop established
 tokens → per token run a cheap `score_token_light`; **promote to full analysis**
