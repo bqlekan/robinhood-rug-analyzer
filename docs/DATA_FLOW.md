@@ -35,6 +35,7 @@ sequenceDiagram
     RA->>SC: score_token(all dimensions)
     SC-->>RA: RugAnalysis (score, level, signals, confidence)
     RA->>RA: developer_reputation.evaluate(result)
+    RA->>RA: developer_network.evaluate(result) [sibling holders, DexScreener, templates]
     RA->>RA: smart_wallet_reputation.evaluate(each smart wallet hit)
     RA-->>C: TokenAnalysisResponse
 ```
@@ -42,7 +43,8 @@ sequenceDiagram
 **Ordered steps** (see [`ARCHITECTURE.md` §9.1](./ARCHITECTURE.md#91-analyze_token_contract--composition-order)):
 validate → parallel fetch → market data → age → holders → transfers (once) →
 clusters → dev/creator → wallet intel → liquidity lock → launchpad (gated) →
-lore (optional) → honeypot → score → developer reputation → smart wallet
+lore (optional) → honeypot → score → developer reputation → developer network
+intelligence (parallel sibling fetches: holders, DexScreener, contracts) → smart wallet
 reputations (parallel per smart wallet hit) → response.
 
 **Scan path** (`POST /scan`): cap the limit → `list_tokens` → drop established

@@ -288,6 +288,27 @@ are the per-tab feature modules. Styles are split into `css/{tokens,base,compone
   `_score_wallet_reputation` (registered in `SCORERS`, weighted as `wallet_reputation` in config).
 - Failure modes: provider errors logged and skipped; missing data yields a baseline score.
 
+**`app/services/developer_network.py`** — Developer Network Intelligence engine.
+- Public: `evaluate(result: TokenAnalysisResponse) -> DeveloperNetworkResult | None`.
+- Dependencies: `blockscout_client`, `dexscreener_client`, `cache`, `models.token`.
+- Architecture: modular provider pattern (`NetworkProvider` protocol). `OnChainNetworkProvider`
+  discovers sibling tokens from `DevProfile.launched_tokens`, then fetches per-sibling holders
+  (Blockscout), market data (DexScreener), contract templates, and social links. Cross-references
+  current token's holders/smart wallets/insiders with sibling token holders to detect ecosystem
+  connectivity. Future providers (GitHub, ENS, social, KOL) implement the same protocol and register
+  in `_PROVIDERS`. Cached per deployer address (in-process `TTLCache`, same TTL as developer
+  reputation). Sibling analysis capped at 10 to bound API cost.
+- Scores computed: network score (0-100), cluster confidence, historical success/failure rates,
+  average liquidity, average holder count, wallet reuse, infrastructure reuse, funding reputation,
+  launch consistency, project quality, network risk, network trust. Each with human-readable evidence.
+- Integration: called from `analyze_token_contract` after developer reputation; result attached to
+  `TokenAnalysisResponse.developer_network`. The Opportunity Score engine reads it via
+  `_score_developer_network` (registered in `SCORERS`, weighted as `developer_network: 15` in config).
+- Cache strategy: reuses Blockscout static cache (300s) for contract reads, market cache (15s) for
+  counters, and DexScreener's own cache. Per-deployer result cached at deployer_reputation_ttl_hours.
+- Failure modes: provider errors logged and skipped; partial sibling data produces partial scores.
+  Missing deployer returns None (no crash).
+
 ### 3.3 Data clients and infrastructure
 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.

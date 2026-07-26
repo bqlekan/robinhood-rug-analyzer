@@ -104,6 +104,7 @@ class Settings(BaseSettings):
         "verified": 5,
         "dev_reputation": 10,
         "wallet_reputation": 10,
+        "developer_network": 15,
     }
     opportunity_exclude_risk_floor: int = 70
     opportunity_exclude_alpha_floor: int = 30

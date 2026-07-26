@@ -127,6 +127,35 @@ function renderWalletReputations(reps) {
     </section>`;
 }
 
+function renderDeveloperNetwork(net) {
+  if (!net) return "";
+  const ev = (net.evidence || [])
+    .map((e) => `<li class="signal${e.startsWith("+") ? "" : " signal-medium"}">${esc(e)}</li>`)
+    .join("");
+  const sibs = (net.siblings || [])
+    .slice(0, 8)
+    .map((s) => `<li class="signal"><strong>${esc(s.name || s.symbol || shortAddr(s.address))}</strong><span>${esc((s.outcome || "unknown").replace(/_/g, " "))}${s.holder_count != null ? ` · ${esc(s.holder_count)} holders` : ""}${s.shared_wallets ? ` · ${esc(s.shared_wallets)} shared` : ""}</span></li>`)
+    .join("");
+  const infra = (net.siblings || []).flatMap((s) => s.shared_infrastructure || []);
+  const infraHtml = infra.length
+    ? `<p class="lore-meta">Shared: ${infra.map((i) => esc(i)).join(", ")}</p>`
+    : "";
+  return `
+    <section>
+      <h2>Developer Network</h2>
+      <div class="analysis-summary" style="border-left: 5px solid ${repColor(net.score)}">
+        ${card("Network Score", `${net.score}/100`, net.cluster_confidence)}
+        ${card("Cluster Size", esc(net.cluster_size))}
+        ${net.funding_wallet ? card("Funding Wallet", `<code class="addr-inline">${esc(shortAddr(net.funding_wallet))}</code>`) : ""}
+        ${net.historical_success_rate != null ? card("Success Rate", `${Math.round(net.historical_success_rate * 100)}%`) : ""}
+        ${net.historical_failure_rate != null && net.historical_failure_rate > 0 ? card("Failure Rate", `${Math.round(net.historical_failure_rate * 100)}%`) : ""}
+      </div>
+      ${infraHtml}
+      ${ev ? `<ul class="signals">${ev}</ul>` : ""}
+      ${sibs ? `<h3>Sibling Tokens</h3><ul class="signals">${sibs}</ul>` : ""}
+    </section>`;
+}
+
 export function renderDevDetail(d) {
   if (!d) return "";
   const launched = (d.launched_tokens || [])
@@ -198,6 +227,7 @@ export function renderAnalysis(data, resultEl) {
     </section>
 
     ${renderDevReputation(data.developer_reputation)}
+    ${renderDeveloperNetwork(data.developer_network)}
     ${renderWalletReputations(data.wallet_reputations)}
     ${renderInsiders(data.insiders, data.watchlist_hits)}
     ${renderDevDetail(d)}

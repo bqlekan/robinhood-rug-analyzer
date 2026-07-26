@@ -151,6 +151,20 @@ def _score_wallet_reputation(result: TokenAnalysisResponse) -> SignalResult | No
     return SignalResult(name="wallet_reputation", value=v, positive=positive, detail=detail)
 
 
+def _score_developer_network(result: TokenAnalysisResponse) -> SignalResult | None:
+    net = result.developer_network
+    if net is None:
+        return None
+    v = max(0, min(100, net.score))
+    positive = v >= 50
+    size = net.cluster_size
+    if positive:
+        detail = f"Network score {v}/100 ({size} token ecosystem)"
+    else:
+        detail = f"Weak network ({v}/100, {size} token{'s' if size != 1 else ''})"
+    return SignalResult(name="developer_network", value=v, positive=positive, detail=detail)
+
+
 # Module-level scorer registry. Append here to add future signals.
 SCORERS: list[Scorer] = [
     _score_risk,
@@ -162,6 +176,7 @@ SCORERS: list[Scorer] = [
     _score_verified,
     _score_dev_reputation,
     _score_wallet_reputation,
+    _score_developer_network,
 ]
 
 

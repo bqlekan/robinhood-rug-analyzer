@@ -1298,6 +1298,37 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### Developer Network Intelligence (post-M27) ✅ COMPLETE
+
+- **Goal:** Move beyond single-deployer reputation to ecosystem-level intelligence. While Developer
+  Reputation answers "Is this developer trustworthy?", Developer Network Intelligence answers "What
+  ecosystem is this token connected to?" — discovering sibling tokens, cross-referencing holders and
+  wallets, shared infrastructure, and funding chains to grade the entire network.
+- **Status:** ✅ **COMPLETE** (2026-07-26). _As built:_
+  - New `app/services/developer_network.py` — modular provider pattern (`NetworkProvider` protocol).
+    `OnChainNetworkProvider` discovers sibling tokens from `DevProfile.launched_tokens`, fetches
+    per-sibling holders (Blockscout), market data (DexScreener), contract templates, social links.
+    Cross-references current token's holders/smart wallets/insiders with sibling holders.
+  - Scores: network score (0-100), cluster confidence, historical success/failure rates, average
+    liquidity, average holder count, wallet reuse, infrastructure reuse, funding reputation, launch
+    consistency, project quality, network risk, network trust. All with human-readable evidence.
+  - Model: `NetworkSibling` + `DeveloperNetworkResult` on `TokenAnalysisResponse.developer_network`.
+  - Opportunity Score: `_score_developer_network` (weight 15, configurable).
+  - Frontend: "Developer Network" section on analysis page showing network score, cluster size,
+    funding wallet, success/failure rates, sibling tokens, shared infrastructure, evidence.
+  - Cache: per-deployer (same TTL as developer reputation). Reuses Blockscout static cache for
+    contract reads, market cache for counters, DexScreener cache. Sibling cap at 10.
+  - Tests: 38 tests covering new dev, single project, multiple successes, multiple rugs, shared
+    funding, shared deployers, shared liquidity wallets, missing data, partial failures, cache,
+    parallel execution, score calculation, evidence generation, API compatibility, opportunity
+    integration, deterministic output.
+  - **643 tests passing (38 new + 605 existing, zero regressions).**
+- **Files:** `app/services/developer_network.py`, `app/models/token.py`, `app/services/opportunity_score.py`,
+  `app/core/config.py`, `app/services/rug_analyzer.py`, `frontend/js/render/analysis.js`,
+  `tests/test_developer_network.py`, `docs/ARCHITECTURE.md`, `docs/DATA_FLOW.md`, `ROADMAP.md`.
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.

@@ -400,6 +400,41 @@ class DeveloperReputationResult(BaseModel):
     funding_source: str | None = None
 
 
+class NetworkSibling(BaseModel):
+    address: str
+    name: str | None = None
+    symbol: str | None = None
+    outcome: str  # "alive" | "likely_rugged" | "unknown"
+    liquidity_usd: float | None = None
+    holder_count: int | None = None
+    market_cap: float | None = None
+    verified: bool = False
+    shared_wallets: int = 0
+    shared_infrastructure: list[str] = Field(default_factory=list)
+
+
+class DeveloperNetworkResult(BaseModel):
+    score: int
+    cluster_confidence: str = "low"  # "high" | "medium" | "low"
+    evidence: list[str] = Field(default_factory=list)
+    deployer: str | None = None
+    funding_wallet: str | None = None
+    cluster_size: int = 0
+    siblings: list[NetworkSibling] = Field(default_factory=list)
+    historical_success_rate: float | None = None
+    historical_failure_rate: float | None = None
+    avg_liquidity_usd: float | None = None
+    avg_holder_count: float | None = None
+    avg_survival_days: float | None = None
+    wallet_reuse_score: float | None = None
+    infrastructure_reuse_score: float | None = None
+    funding_reputation: str | None = None  # "clean" | "mixed" | "rug_linked" | "unknown"
+    launch_consistency: float | None = None
+    project_quality: float | None = None
+    network_risk: float | None = None
+    network_trust: float | None = None
+
+
 class SmartWalletReputationResult(BaseModel):
     score: int
     confidence: str = "medium"
@@ -442,6 +477,7 @@ class TokenAnalysisResponse(BaseModel):
     watchlist_hits: list[WatchlistHit] = Field(default_factory=list)
     trend: TokenTrend | None = None
     developer_reputation: DeveloperReputationResult | None = None
+    developer_network: DeveloperNetworkResult | None = None
     wallet_reputations: list[SmartWalletReputationResult] = Field(default_factory=list)
     analysis: RugAnalysis
 
