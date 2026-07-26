@@ -68,6 +68,97 @@ export function alphaColor(score) {
   return `hsl(${hue}, 75%, 40%)`;
 }
 
+// Opportunity Score color tiers (distinct from risk palette).
+export function opportunityColor(score) {
+  if (score == null) return "var(--muted)";
+  if (score >= 90) return "var(--opp-excellent)";
+  if (score >= 75) return "var(--opp-good)";
+  if (score >= 60) return "var(--opp-moderate)";
+  if (score >= 40) return "var(--opp-cautious)";
+  return "var(--opp-poor)";
+}
+
+export function opportunityLevel(score) {
+  if (score == null) return "Unknown";
+  if (score >= 90) return "Excellent";
+  if (score >= 75) return "Good";
+  if (score >= 60) return "Moderate";
+  if (score >= 40) return "Cautious";
+  return "Poor";
+}
+
+// Build explanation badges from existing analysis fields. Display-only — no scoring.
+export function opportunityBadges(data) {
+  const badges = [];
+  const add = (label, kind) => badges.push({ label, kind });
+  if (data.watchlist_hits?.some((h) => h.kind === "smart")) add("Strong Smart Wallets", "positive");
+  if (data.developer_reputation?.score >= 60) add("Proven Developer", "positive");
+  if (data.market_data?.liquidity?.usd >= 10000) add("Healthy Liquidity", "positive");
+  if (data.holders?.holder_count >= 50) add("Growing Holders", "positive");
+  if (data.contract_intel?.verified) add("Verified Contract", "positive");
+  if (data.honeypot?.status === "sellable") add("Honeypot Safe", "positive");
+  if (data.liquidity_lock?.status?.toLowerCase().includes("locked")) add("LP Locked", "positive");
+  if (data.contract_privileges?.ownership_renounced === true) add("Renounced", "positive");
+  if (data.launchpad?.name && data.launchpad.name !== "Unknown") add("Launchpad", "info");
+  if (data.token_age?.age_hours != null && data.token_age.age_hours < 24) add("Fresh Launch", "info");
+  if (data.holders?.top1_percentage >= 30) add("Whale Concentration", "warning");
+  if (data.developer_reputation?.score != null && data.developer_reputation.score < 30) add("Low History", "warning");
+  if (data.market_data?.liquidity?.usd != null && data.market_data.liquidity.usd < 1000) add("Young Liquidity", "warning");
+  return badges;
+}
+
+export function opportunityBadgesHtml(data) {
+  const badges = opportunityBadges(data);
+  if (!badges.length) return "";
+  return `<div class="opp-badges">${badges.map((b) =>
+    `<span class="opp-badge ${b.kind}">${b.kind === "positive" ? "✓" : b.kind === "warning" ? "⚠" : "ℹ"} ${esc(b.label)}</span>`
+  ).join("")}</div>`;
+}
+
+// Single horizontal health bar (display-only).
+export function healthBar(label, score, color) {
+  const v = Math.max(0, Math.min(100, score ?? 0));
+  return `<div class="health-bar">
+    <span class="health-bar-label">${esc(label)}</span>
+    <div class="health-bar-track"><div class="health-bar-fill" style="width:${v}%;background:${color}"></div></div>
+    <span class="health-bar-value">${score != null ? v : "–"}</span>
+  </div>`;
+}
+
+// Generate a 1-2 sentence summary from analysis evidence (display-only template).
+export function summaryText(data) {
+  const opp = data.alpha_score;
+  const risk = data.analysis?.risk_score;
+  const parts = [];
+
+  if (opp != null && opp >= 75) parts.push("Excellent early opportunity.");
+  else if (opp != null && opp >= 50) parts.push("Interesting but speculative.");
+  else if (opp != null && opp >= 25) parts.push("Moderate opportunity with caveats.");
+  else parts.push("Limited opportunity signals.");
+
+  const positives = [];
+  const negatives = [];
+  if (data.developer_reputation?.score >= 60) positives.push("strong developer history");
+  if (data.watchlist_hits?.some((h) => h.kind === "smart")) positives.push("quality wallet participation");
+  if (data.market_data?.liquidity?.usd >= 10000) positives.push("healthy liquidity");
+  if (data.honeypot?.status === "sellable") positives.push("sellable token");
+  if (data.contract_intel?.verified) positives.push("verified contract");
+  if (data.developer_reputation?.score != null && data.developer_reputation.score < 30) negatives.push("weak developer reputation");
+  if (risk != null && risk >= 60) negatives.push("elevated risk");
+  if (data.market_data?.liquidity?.usd != null && data.market_data.liquidity.usd < 1000) negatives.push("low liquidity");
+
+  if (positives.length && negatives.length) {
+    parts.push(`${capitalize(positives.slice(0, 2).join(" and "))} but ${negatives.slice(0, 2).join(" and ")}.`);
+  } else if (positives.length) {
+    parts.push(`${capitalize(positives.slice(0, 3).join(", "))}.`);
+  } else if (negatives.length) {
+    parts.push(`${capitalize(negatives.slice(0, 2).join(" and "))}.`);
+  }
+  return parts.join(" ");
+}
+
+function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ""; }
+
 export function alphaSignalsHtml(signals) {
   if (!signals || !signals.length) return "";
   return `<div class="alpha-signals">${signals

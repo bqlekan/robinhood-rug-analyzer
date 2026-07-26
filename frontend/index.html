@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Robinhood Chain Rug Analyzer</title>
+  <title>Robinhood Chain Opportunity Intelligence</title>
   <link rel="stylesheet" href="css/components.css" />
 </head>
 <body>
   <main class="container">
     <header class="hero">
-      <p class="eyebrow">Robinhood Chain · Rug Risk Intelligence</p>
-      <h1>Robinhood Chain Rug Analyzer</h1>
+      <p class="eyebrow">Robinhood Chain · Opportunity Intelligence</p>
+      <h1>Robinhood Chain Intelligence</h1>
       <p class="description">
-        Rank Robinhood Chain tokens by rug risk and drill into any token: age, holders, clusters,
-        dev holdings and history, liquidity lock, launchpad, and social lore. Built entirely on
+        Discover the best opportunities on Robinhood Chain. Every token is scored by opportunity,
+        risk, developer reputation, smart wallet activity, and liquidity — built entirely on
         free public data sources.
       </p>
     </header>
@@ -48,7 +48,15 @@
         <label class="checkbox"><input id="scan-lore" type="checkbox" /> Include lore (slower)</label>
         <button type="submit">Scan &amp; Rank</button>
       </form>
-      <div id="scan-status" class="status" role="status" aria-live="polite">Run a scan to rank active Robinhood Chain tokens by risk.</div>
+      <div id="scan-filters" class="filter-row" hidden>
+        <label>Min opportunity <input id="f-opp-min" type="number" min="0" max="100" placeholder="0" /></label>
+        <label>Max risk <input id="f-risk-max" type="number" min="0" max="100" placeholder="100" /></label>
+        <label>Min liquidity ($) <input id="f-liq-min" type="number" min="0" placeholder="0" /></label>
+        <label>Max age (h) <input id="f-age-max" type="number" min="0" placeholder="" /></label>
+        <label>Verified <select id="f-verified"><option value="">Any</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+        <label>Honeypot safe <select id="f-honeypot"><option value="">Any</option><option value="yes">Yes</option></select></label>
+      </div>
+      <div id="scan-status" class="status" role="status" aria-live="polite">Run a scan to rank active Robinhood Chain tokens by opportunity.</div>
       <div id="scan-results" class="ranked-list"></div>
     </section>
 

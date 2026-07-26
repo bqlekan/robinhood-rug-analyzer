@@ -509,6 +509,9 @@ class TokenAnalysisResponse(BaseModel):
     developer_network: DeveloperNetworkResult | None = None
     wallet_reputations: list[SmartWalletReputationResult] = Field(default_factory=list)
     timeline: AlphaTimeline | None = None
+    alpha_score: int | None = None
+    alpha_level: str | None = None
+    alpha_signals: list["OpportunitySignal"] = Field(default_factory=list)
     analysis: RugAnalysis
 
 

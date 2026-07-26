@@ -15,14 +15,13 @@ const result      = document.querySelector("#result");
 const analyzeStatus = document.querySelector("#analyze-status");
 
 const ANALYZE_STEPS = [
-  "Connecting…",
-  "Loading blockchain data…",
+  "Scanning launch…",
+  "Analysing contract…",
   "Checking holders…",
-  "Analyzing liquidity…",
-  "Running honeypot simulation…",
-  "Evaluating deployer…",
-  "Checking KOL intelligence…",
-  "Calculating Alpha Score…",
+  "Scoring developers…",
+  "Evaluating smart wallets…",
+  "Building opportunity score…",
+  "Generating timeline…",
   "Finalizing…",
 ];
 

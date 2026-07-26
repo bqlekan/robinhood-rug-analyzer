@@ -575,6 +575,12 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     # Alpha Timeline: convert all analysis outputs into a chronological story.
     result.timeline = alpha_timeline.build_timeline(result)
 
+    # Opportunity Score: compute from analysis outputs (single source of truth).
+    opp = score_opportunity(result)
+    result.alpha_score = opp.alpha_score
+    result.alpha_level = opp.alpha_level
+    result.alpha_signals = opp.signals
+
     return result
 
 

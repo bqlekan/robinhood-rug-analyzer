@@ -170,26 +170,38 @@ frontend; owns the lifespan-scoped background scheduler.
 - Extension: add a background loop as an `asyncio.create_task` in `lifespan`, guarded by an enable flag (this is where a future KOL capture scheduler lands).
 - Failure modes: the refresh loop wraps each cycle in try/except so it never dies; forces correct MIME types on Windows so the frontend never serves unstyled.
 
-**`frontend/` (static UI)** — vanilla ES modules served at `/`, no build step (F1).
+**`frontend/` (static UI)** — vanilla ES modules served at `/`, no build step.
 `js/main.js` boots the app; `js/api.js` is the single `apiClient` over `/api/v1/*`
 (same-origin); `js/ui.js` holds shared primitives (`esc`/`safeUrl`, progress,
-skeletons, toasts, token-action rows); `js/router.js` is the tab router; `js/pages/*`
-are the per-tab feature modules. Styles are split into `css/{tokens,base,components}.css`
-(design tokens as CSS custom properties). A production-readiness polish pass (post-M27) added,
-**frontend-only** (no backend/API/scoring change):
-- **Token navigation:** every discovered token (ranked scanner + each Smart Wallet's
-  recent buys) is a clickable control that switches to Analyze, populates the contract,
-  auto-runs analysis, smooth-scrolls to results, and highlights the source. Reuses the
-  contract already returned — no extra request.
-- **Loading UX:** one shared indeterminate progress bar + staged status text for Analyze /
-  Scan / Wallet-load / Refresh (the API has no progress stream, so it snaps to 100% on
-  success); per-action in-flight flags + button locks prevent duplicate requests; failures
-  stop the bar, restore controls, and surface a clean message.
+skeletons, toasts, token-action rows) plus **opportunity display helpers**
+(`opportunityColor`, `opportunityLevel`, `opportunityBadges`, `healthBar`,
+`summaryText` — all display-only, never compute scores); `js/router.js` is the tab
+router; `js/pages/*` are the per-tab feature modules; `js/render/analysis.js` renders
+the full token analysis view with summary header, health bars, collapsible sections,
+explanation panels, and a vertical timeline. Styles are split into
+`css/{tokens,base,components}.css` (design tokens as CSS custom properties, including
+opportunity score tier colors). The frontend is an **Opportunity Intelligence dashboard**:
+- **Dashboard:** "Best Opportunities Right Now" sorted by `alpha_score` (opportunity score)
+  descending. Cards show opportunity score (large, colored by tier), risk score, top signals,
+  and explanation badges.
+- **Ranked Scanner:** client-side filters (opportunity min, risk max, liquidity min, age max,
+  verified, honeypot safe) on cached scan data — no extra API calls.
+- **Analysis page:** summary header (opportunity + risk + confidence + summary text), quick
+  health bars (6 dimensions), opportunity badges, collapsible `<details>` sections (Overview,
+  Security, Developer, Developer Network, Smart Wallets, Liquidity, Holder Analysis, Alpha
+  Timeline, Lore, Limitations), explanation panels per score section, vertical timeline with
+  category icons and expandable evidence.
+- **Token navigation:** every discovered token is clickable → switches to Analyze, populates
+  the contract, auto-runs analysis, smooth-scrolls to results.
+- **Loading UX:** domain-specific staged status text ("Scoring developers…", "Building
+  opportunity score…", "Generating timeline…"); per-action in-flight flags + button locks.
 - **Token actions:** Copy / Blockscout / DexScreener (new tab), built from `/api/v1/chain`.
 - **Recent searches:** last 10 analyzed contracts in `localStorage`, click to re-analyze.
 - **Skeletons + subtle transitions** (reduced-motion aware); **accessibility** (ARIA
   tablist/roving tabindex, `aria-live` status, focus indicators); **mobile** stacking +
-  no horizontal overflow.
+  no horizontal overflow (560px responsive breakpoint).
+- **Design rule:** Backend = single source of truth for all scores. Frontend only formats,
+  colors, groups, summarizes, and visualizes values the backend computed.
 
 **`app/api/routes.py`** — the v1 REST surface under `/api/v1`.
 - Public: `GET /chain`, `POST /analyze`, `POST /scan`, `GET /watchlist` (M21: `kind`/`sort` query params), `POST /watchlist/refresh` (M21: on-request refresh fallback for idle hosts), `GET /wallet/{address}`, `GET /history/{address}` (M19: stored trend snapshots).

@@ -1367,6 +1367,43 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### Frontend Opportunity Center v1 (post-Alpha Timeline) ✅ COMPLETE
+
+- **Goal:** Transform the frontend from a risk scanner into an Opportunity Intelligence dashboard,
+  surfacing all existing intelligence (opportunity score, developer reputation, network, smart wallets,
+  timeline) without changing backend scoring logic or API contracts.
+- **Status:** ✅ **COMPLETE** (2026-07-26). _As built:_
+  - **Backend wiring (minimal, additive):** `TokenAnalysisResponse` gains `alpha_score`, `alpha_level`,
+    `alpha_signals` — the existing `score_opportunity()` (already imported in `rug_analyzer.py`) is called
+    after timeline generation and attached to the response. No scoring logic added or modified.
+  - **Dashboard:** "Best Opportunities Right Now" landing sorted by `alpha_score` descending. Cards show
+    opportunity score (large, colored), risk score (small), top positive/negative signal, badges.
+  - **Ranked Scanner:** client-side filters (opportunity min, risk max, liquidity min, age max, verified,
+    honeypot safe) on cached data — no extra API calls. Sorted by opportunity score by default.
+  - **Analysis page (full rewrite):** summary header with opportunity + risk scores + confidence + summary
+    text, quick health bars (6 dimensions), opportunity badges, collapsible `<details>` sections
+    (Overview, Security, Developer, Developer Network, Smart Wallets, Liquidity, Holder Analysis,
+    Alpha Timeline, Lore, Limitations), explanation panels per score section, vertical timeline with
+    category icons + severity dots + expandable evidence.
+  - **Design system:** CSS custom properties for opportunity score tiers (excellent/good/moderate/cautious/
+    poor), new component styles (`.opp-badge`, `.health-bar`, `.summary-header`, `.collapsible`,
+    `.vtimeline`, `.explanation-panel`, `.filter-row`, `.empty-state`), mobile responsive at 560px.
+  - **UI helpers (display only):** `opportunityColor()`, `opportunityLevel()`, `opportunityBadges()`,
+    `healthBar()`, `summaryText()` — all read backend-computed values, never compute scores.
+  - **Loading experience:** domain-specific status messages ("Scoring developers…", "Building opportunity
+    score…", "Generating timeline…").
+  - **Empty states:** meaningful messages throughout (no qualifying launches, no smart wallet activity,
+    no timeline events, no network data).
+  - **Branding:** title "Robinhood Chain Opportunity Intelligence", hero focused on opportunity discovery.
+- **Design rule:** Backend = single source of truth for all scores. Frontend = presentation, filtering,
+  explanation, and visualization only. No scoring algorithm is duplicated in JavaScript.
+- **Files:** `app/models/token.py` (+3 fields), `app/services/rug_analyzer.py` (+4 lines wiring),
+  `frontend/index.html`, `frontend/css/tokens.css`, `frontend/css/components.css`, `frontend/js/ui.js`,
+  `frontend/js/pages/dashboard.js`, `frontend/js/pages/scan.js`, `frontend/js/pages/token.js`,
+  `frontend/js/render/analysis.js`, `ROADMAP.md`, `docs/ARCHITECTURE.md`.
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.
