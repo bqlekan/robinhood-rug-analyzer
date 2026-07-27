@@ -51,12 +51,13 @@ reputations (parallel per smart wallet hit) → alpha timeline (pure, no I/O) �
 **Scan path** (`POST /scan`): cap the limit → discover recent candidates from
 DexScreener newest-pairs → drop established tokens → per token run a cheap
 `score_token_light`; **promote to full analysis** unless the token is confidently
-safe → full analysis → **eligibility gate** (`eligibility.evaluate`) classifies
-each token as eligible/ineligible → opportunity score only for eligible tokens →
-eligible tokens enter `ranked_tokens` sorted by alpha descending; ineligible tokens
-enter `excluded_tokens` with `rejection_reasons` → `ScanResponse`.
+safe → full analysis → **qualification engine** (`eligibility.evaluate`) classifies
+each token with a `qualification_level` (excellent/good/speculative/high_risk/excluded)
+and `confidence_score` (0–100) → opportunity score for all non-excluded tokens →
+non-excluded tokens enter `ranked_tokens` sorted by alpha desc, confidence desc,
+risk asc; excluded tokens enter `excluded_tokens` with `rejection_reasons` → `ScanResponse`.
 
-**Pipeline order:** Discover → Analyse → **Eligibility** → Opportunity Score → Rank.
+**Pipeline order:** Discover → Analyse → **Qualification** → Opportunity Score → Rank.
 
 **Degradation:** every external read returns `None`/`[]` on failure; a bad token
 in a scan is dropped, not fatal; the honeypot sim returns `"unknown"` rather

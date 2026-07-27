@@ -517,12 +517,16 @@ class TokenAnalysisResponse(BaseModel):
     analysis: RugAnalysis
 
 
-class EligibilityResult(BaseModel):
-    eligible: bool
+class QualificationResult(BaseModel):
+    qualification_level: str  # "excellent" | "good" | "speculative" | "high_risk" | "excluded"
+    confidence_score: int = 50
+    confidence_factors: list[str] = Field(default_factory=list)
     rejection_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    confidence: int = 100
     evidence: list[str] = Field(default_factory=list)
+
+
+EligibilityResult = QualificationResult
 
 
 class OpportunitySignal(BaseModel):
@@ -558,7 +562,9 @@ class RankedToken(BaseModel):
     alpha_score: int | None = None
     alpha_level: str | None = None
     alpha_signals: list[OpportunitySignal] = Field(default_factory=list)
-    # Eligibility gate (pre-ranking quality filter).
+    # Qualification engine (pre-ranking classifier).
+    qualification_level: str = "speculative"  # "excellent" | "good" | "speculative" | "high_risk" | "excluded"
+    confidence_score: int = 50
     eligible: bool = True
     excluded_from_ranking: bool = False
     rejection_reasons: list[str] = Field(default_factory=list)

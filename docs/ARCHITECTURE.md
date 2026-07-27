@@ -765,37 +765,44 @@ router is mapped, and the launchpad registries are empty by design.
 3. A `Semaphore(scan_max_deep_analyses)` bounds concurrent deep analyses.
 4. Per token: if tiering is off → always deep. Else compute holder count and `score_token_light`. A token is **confidently safe** only when holder count is known AND `>= scan_established_holder_floor` AND light score `< scan_light_promote_threshold`. Anything not confidently safe is **promoted** to deep analysis.
 5. Deep analysis runs under the semaphore, wrapped so one bad token is dropped.
-6. **Eligibility gate** — `eligibility.evaluate(result)` runs on each analyzed token. Only eligible tokens enter `ranked_tokens`; ineligible tokens are returned in `excluded_tokens` with `rejection_reasons` (not silently dropped).
-7. Sort eligible tokens by `alpha_score` descending, then `risk_score` ascending → `ScanResponse`.
+6. **Qualification gate** — `eligibility.evaluate(result)` classifies each analyzed token with a `qualification_level` (excellent/good/speculative/high_risk/excluded) and `confidence_score` (0–100). Only `excluded` tokens are removed from `ranked_tokens`; all others remain rankable. Excluded tokens are returned in `excluded_tokens` with `rejection_reasons`.
+7. Sort ranked tokens by `alpha_score` descending, `confidence_score` descending, then `risk_score` ascending → `ScanResponse`.
 
-### 9.2.1 Eligibility Engine (`app/services/eligibility.py`)
+### 9.2.1 Qualification Engine (`app/services/eligibility.py`)
 
-A pre-ranking quality gate that runs AFTER full analysis, BEFORE opportunity
-scoring in the scan pipeline. Returns `EligibilityResult(eligible, rejection_reasons,
-warnings, confidence, evidence)`.
+A pre-ranking classifier that runs AFTER full analysis, BEFORE opportunity
+scoring in the scan pipeline. Returns `QualificationResult(qualification_level,
+confidence_score, confidence_factors, rejection_reasons, warnings, evidence)`.
 
-**Checks evaluated (all configurable, nothing hardcoded):**
+**Hard exclusions (the only criteria that remove a token from ranking):**
 
-| Check | Config key | Default |
-|---|---|---|
-| Trading pair exists | `eligibility_require_pair` | `True` |
-| Liquidity data available | `eligibility_require_liquidity` | `True` |
-| Liquidity above minimum | `eligibility_min_liquidity_usd` | `500` |
-| Price data available | `eligibility_require_price` | `True` |
-| Market cap available | `eligibility_require_market_cap` | `False` |
-| Market cap above minimum | `eligibility_min_market_cap_usd` | `0` |
-| Token age within limit | `eligibility_max_age_days` | `3.0` |
-| Holder count above minimum | `eligibility_min_holder_count` | `0` |
-| 24h volume above minimum | `eligibility_min_volume_h24_usd` | `0` |
-| Risk score below maximum | `eligibility_max_risk_score` | `80` |
-| Not a honeypot | (always checked) | — |
-| Analysis confidence sufficient | `eligibility_require_analysis` | `True` |
+| Exclusion | Condition |
+|---|---|
+| Honeypot | `honeypot.status == "honeypot"` |
+| No active trading pair | `qualification_require_pair` and no `pair_address` |
+| Zero / missing liquidity | `liquidity.usd == 0` or `None` when `qualification_require_liquidity` |
+| Dead contract | No market data at all |
+| Proven rug | `risk_score >= qualification_hard_exclude_risk_score` (default 95) |
+| Trading disabled | Sell tax >= 90% |
 
-**Evidence generation:** eligible tokens carry human-readable evidence explaining
-_why_ they qualified (e.g. "Healthy liquidity", "Active trading", "Low rug risk",
+**Classification levels (everything that isn't excluded):**
+
+| Level | Criteria |
+|---|---|
+| excellent | risk ≤ 30, liquidity ≥ $5k, holders ≥ 50, dev rep ≥ 50 or lock |
+| good | risk ≤ 50, liquidity ≥ $1k |
+| speculative | risk ≤ 80 |
+| high_risk | anything else not excluded |
+
+**Confidence score (0–100):** weighted composite of 8 dimensions — data completeness (20),
+liquidity quality (15), contract verification (10), developer reputation (15),
+developer network (10), smart wallet activity (10), holder quality (10), age (10).
+
+**Evidence generation:** non-excluded tokens carry human-readable evidence
+(e.g. "Liquidity $5,000", "Active trading", "Low rug risk",
 "Strong developer reputation", "Smart wallet accumulation").
 
-**Pipeline position:** Discover → Analyse → **Eligibility** → Opportunity Score → Rank.
+**Pipeline position:** Discover → Analyse → **Qualification** → Opportunity Score → Rank.
 
 ### 9.3 Risk scoring model (`score_token`)
 

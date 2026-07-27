@@ -1402,7 +1402,7 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   `frontend/js/pages/dashboard.js`, `frontend/js/pages/scan.js`, `frontend/js/pages/token.js`,
   `frontend/js/render/analysis.js`, `ROADMAP.md`, `docs/ARCHITECTURE.md`.
 
-### Eligibility Engine (post-Frontend, data quality) ✅ COMPLETE
+### Eligibility Engine (post-Frontend, data quality) ✅ COMPLETE → Superseded by Qualification Engine
 
 - **Objective:** Make the ranking trustworthy. "Best Opportunities" should only show tokens that pass basic quality requirements — not rugged, inactive, or data-deficient tokens.
 - **Pipeline change:** Discover → Analyse → **Eligibility** → Opportunity Score → Rank. The eligibility gate runs AFTER full analysis, BEFORE opportunity scoring.
@@ -1415,6 +1415,19 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 - **Dashboard / Scanner:** Only `eligible == true` tokens appear in `ranked_tokens`. Ineligible tokens are in `excluded_tokens` with rejection reasons, available for a future "Show Excluded" UI feature.
 - **Tests:** 27 tests covering eligible tokens, rugged tokens, no liquidity, missing market cap, dead trading pairs, stale price, failed analysis, age limits, edge cases. Full suite: 736 passed, 0 regressions.
 - **Files:** `app/core/config.py`, `app/models/token.py`, `app/services/eligibility.py` (new), `app/services/rug_analyzer.py`, `tests/test_eligibility.py` (new), `docs/ARCHITECTURE.md`, `docs/DATA_FLOW.md`, `ROADMAP.md`.
+
+### Qualification Engine v1 (post-Eligibility, classifier refactor) ✅ COMPLETE
+
+- **Problem:** Binary eligibility engine was too restrictive — dashboard/scanner frequently returned zero tokens because common conditions (risk 81, $400 liquidity, no price, age >3d) caused hard exclusion.
+- **Solution:** Converted the eligibility engine from a binary filter to a qualification/classification engine. Only genuinely non-investable tokens are excluded (honeypot, no pair, zero liquidity, dead contract, proven rug risk ≥95, sell tax ≥90%).
+- **Qualification levels:** `excellent` | `good` | `speculative` | `high_risk` | `excluded`. Everything that isn't excluded remains rankable.
+- **Confidence score (0–100):** Weighted composite of 8 dimensions: data completeness, liquidity quality, contract verification, developer reputation, developer network, smart wallet activity, holder quality, age.
+- **Sort order:** Primary by alpha_score descending, secondary by confidence_score descending, tertiary by risk_score ascending.
+- **Model changes:** `QualificationResult` replaces `EligibilityResult` (backward-compatible alias kept). `RankedToken` extended with `qualification_level`, `confidence_score`. `eligible` and `excluded_from_ranking` repurposed (True/False based on excluded vs not).
+- **Config:** `eligibility_*` settings replaced by `qualification_*` settings. Hard-exclude threshold raised from risk 80 to 95.
+- **Pipeline:** Discover → Analyse → **Qualification** → Opportunity Score → Rank.
+- **Tests:** 30 tests covering exclusions, non-exclusions (key behavioral change), classification levels, confidence scoring, evidence/warnings, backward compatibility.
+- **Files:** `app/core/config.py`, `app/models/token.py`, `app/services/eligibility.py`, `app/services/rug_analyzer.py`, `tests/test_eligibility.py`, `docs/ARCHITECTURE.md`, `docs/DATA_FLOW.md`, `ROADMAP.md`.
 
 ---
 

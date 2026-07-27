@@ -677,7 +677,8 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
                 return None
         top_signal = max(result.analysis.signals, key=lambda s: s.points).name if result.analysis.signals else None
         opp = score_opportunity(result)
-        elig = eligibility.evaluate(result)
+        qual = eligibility.evaluate(result)
+        is_excluded = qual.qualification_level == "excluded"
         lock = result.liquidity_lock
         return RankedToken(
             contract_address=address,
@@ -696,13 +697,15 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             age_days=result.token_age.age_days if result.token_age else None,
             top_signal=top_signal,
             flagged_by=result.watchlist_hits,
-            alpha_score=opp.alpha_score if elig.eligible else None,
-            alpha_level=opp.alpha_level if elig.eligible else None,
+            alpha_score=opp.alpha_score if not is_excluded else None,
+            alpha_level=opp.alpha_level if not is_excluded else None,
             alpha_signals=opp.signals,
-            eligible=elig.eligible,
-            excluded_from_ranking=not elig.eligible,
-            rejection_reasons=elig.rejection_reasons,
-            eligibility_evidence=elig.evidence,
+            qualification_level=qual.qualification_level,
+            confidence_score=qual.confidence_score,
+            eligible=not is_excluded,
+            excluded_from_ranking=is_excluded,
+            rejection_reasons=qual.rejection_reasons,
+            eligibility_evidence=qual.evidence,
             lock_status=lock.status if lock else "unknown",
             lock_percentage=lock.locked_percentage if lock else None,
             lock_provider=lock.locker_label if lock else None,
@@ -720,6 +723,8 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             top_signal="Deep analysis skipped: low-risk on cheap pre-screen (high holder count).",
             alpha_score=0,
             alpha_level="low",
+            qualification_level="good",
+            confidence_score=60,
         )
 
     async def scan_one(token: dict) -> RankedToken | None:
@@ -746,10 +751,10 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
 
     results = await asyncio.gather(*(scan_one(t) for t in tokens))
     all_tokens = [r for r in results if r is not None]
-    # Eligibility engine replaces the old risk/alpha exclusion filter.
-    ranked = [r for r in all_tokens if r.eligible]
-    excluded = [r for r in all_tokens if not r.eligible]
-    ranked.sort(key=lambda r: (-(r.alpha_score or 0), r.risk_score))
+    # Qualification engine: only genuinely non-investable tokens are excluded.
+    ranked = [r for r in all_tokens if r.qualification_level != "excluded"]
+    excluded = [r for r in all_tokens if r.qualification_level == "excluded"]
+    ranked.sort(key=lambda r: (-(r.alpha_score or 0), -(r.confidence_score or 0), r.risk_score))
 
     return ScanResponse(
         chain=chains.active().chain_name,

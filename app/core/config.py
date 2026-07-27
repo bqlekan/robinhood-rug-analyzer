@@ -93,18 +93,18 @@ class Settings(BaseSettings):
     # skipped. 0 disables the floor. Tokens with unknown liquidity are kept (fallback).
     scan_min_candidate_liquidity_usd: float = 500.0
 
-    # --- Eligibility Engine (pre-ranking quality gate) ---
-    eligibility_min_liquidity_usd: float = 500.0
-    eligibility_min_market_cap_usd: float = 0.0
-    eligibility_max_age_days: float = 3.0
-    eligibility_min_holder_count: int = 0
-    eligibility_min_volume_h24_usd: float = 0.0
-    eligibility_max_risk_score: int = 80
-    eligibility_require_pair: bool = True
-    eligibility_require_liquidity: bool = True
-    eligibility_require_price: bool = True
-    eligibility_require_market_cap: bool = False
-    eligibility_require_analysis: bool = True
+    # --- Qualification Engine (pre-ranking classifier) ---
+    # Hard-exclusion gates: only genuinely non-investable tokens are excluded.
+    qualification_require_pair: bool = True
+    qualification_require_liquidity: bool = True
+    qualification_hard_exclude_risk_score: int = 95
+    # Classification thresholds (drive qualification_level, never exclude).
+    qualification_excellent_max_risk: int = 30
+    qualification_excellent_min_liquidity_usd: float = 5000.0
+    qualification_excellent_min_holders: int = 50
+    qualification_good_max_risk: int = 50
+    qualification_good_min_liquidity_usd: float = 1000.0
+    qualification_speculative_max_risk: int = 80
 
     # --- Opportunity Score (Alpha) ---
     opportunity_score_weights: dict[str, int] = {
