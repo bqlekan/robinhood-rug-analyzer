@@ -18,7 +18,7 @@ from app.models.token import (
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
 from app.core import chains
-from app.services import alpha_timeline, analyzers, blockscout_client, contract_intel, contract_privileges, developer_network, developer_reputation, honeypot_sim, launchpad_registry, rpc_client, smart_wallet_reputation, snapshot_store, wallet_intel, watchlist_store
+from app.services import alpha_timeline, analyzers, blockscout_client, contract_intel, contract_privileges, developer_network, developer_reputation, eligibility, honeypot_sim, launchpad_registry, rpc_client, smart_wallet_reputation, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_latest_pairs, fetch_token_pairs
 from app.services.lore_client import build_lore
@@ -54,7 +54,7 @@ def _build_market_data(pair: dict | None) -> TokenMarketData | None:
         base_token_symbol=base_token.get("symbol"),
         quote_token_symbol=quote_token.get("symbol"),
         price_usd=pair.get("priceUsd"),
-        market_cap=to_float(pair.get("marketCap")),
+        market_cap=to_float(pair.get("marketCap")) or to_float(pair.get("fdv")),
         fdv=to_float(pair.get("fdv")),
         liquidity=LiquiditySnapshot(
             usd=to_float(liquidity.get("usd")),
@@ -660,6 +660,8 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
                 return None
         top_signal = max(result.analysis.signals, key=lambda s: s.points).name if result.analysis.signals else None
         opp = score_opportunity(result)
+        elig = eligibility.evaluate(result)
+        lock = result.liquidity_lock
         return RankedToken(
             contract_address=address,
             name=token.get("name"),
@@ -673,9 +675,16 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             age_days=result.token_age.age_days if result.token_age else None,
             top_signal=top_signal,
             flagged_by=result.watchlist_hits,
-            alpha_score=opp.alpha_score,
-            alpha_level=opp.alpha_level,
+            alpha_score=opp.alpha_score if elig.eligible else None,
+            alpha_level=opp.alpha_level if elig.eligible else None,
             alpha_signals=opp.signals,
+            eligible=elig.eligible,
+            excluded_from_ranking=not elig.eligible,
+            rejection_reasons=elig.rejection_reasons,
+            eligibility_evidence=elig.evidence,
+            lock_status=lock.status if lock else "unknown",
+            lock_percentage=lock.locked_percentage if lock else None,
+            lock_provider=lock.locker_label if lock else None,
         )
 
     def _light_ranked(token: dict, address: str, light) -> RankedToken:
@@ -715,21 +724,18 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
         return _light_ranked(token, address, light)
 
     results = await asyncio.gather(*(scan_one(t) for t in tokens))
-    ranked = [r for r in results if r is not None]
-    # Exclude obvious rug candidates: high risk AND low opportunity.
-    risk_floor = settings.opportunity_exclude_risk_floor
-    alpha_floor = settings.opportunity_exclude_alpha_floor
-    ranked = [
-        r for r in ranked
-        if not (r.risk_score >= risk_floor and (r.alpha_score or 0) < alpha_floor)
-    ]
+    all_tokens = [r for r in results if r is not None]
+    # Eligibility engine replaces the old risk/alpha exclusion filter.
+    ranked = [r for r in all_tokens if r.eligible]
+    excluded = [r for r in all_tokens if not r.eligible]
     ranked.sort(key=lambda r: (-(r.alpha_score or 0), r.risk_score))
 
     return ScanResponse(
         chain=chains.active().chain_name,
         status="scan_completed",
         message=f"Analyzed and ranked {len(ranked)} Robinhood Chain tokens by rug risk.",
-        analyzed=len(ranked),
+        analyzed=len(all_tokens),
         ranked_tokens=ranked,
+        excluded_tokens=excluded,
         limitations=LIMITATIONS,
     )

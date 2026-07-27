@@ -515,6 +515,14 @@ class TokenAnalysisResponse(BaseModel):
     analysis: RugAnalysis
 
 
+class EligibilityResult(BaseModel):
+    eligible: bool
+    rejection_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    confidence: int = 100
+    evidence: list[str] = Field(default_factory=list)
+
+
 class OpportunitySignal(BaseModel):
     name: str
     positive: bool
@@ -544,6 +552,15 @@ class RankedToken(BaseModel):
     alpha_score: int | None = None
     alpha_level: str | None = None
     alpha_signals: list[OpportunitySignal] = Field(default_factory=list)
+    # Eligibility gate (pre-ranking quality filter).
+    eligible: bool = True
+    excluded_from_ranking: bool = False
+    rejection_reasons: list[str] = Field(default_factory=list)
+    eligibility_evidence: list[str] = Field(default_factory=list)
+    # Liquidity lock summary (from full analysis).
+    lock_status: str | None = None
+    lock_percentage: float | None = None
+    lock_provider: str | None = None
 
 
 class ScanResponse(BaseModel):
@@ -552,6 +569,7 @@ class ScanResponse(BaseModel):
     message: str
     analyzed: int
     ranked_tokens: list[RankedToken]
+    excluded_tokens: list[RankedToken] = Field(default_factory=list)
     limitations: list[str]
 
 

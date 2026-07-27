@@ -1402,6 +1402,20 @@ and M15 toward their upper effort bounds and may require a fallback provider.
   `frontend/js/pages/dashboard.js`, `frontend/js/pages/scan.js`, `frontend/js/pages/token.js`,
   `frontend/js/render/analysis.js`, `ROADMAP.md`, `docs/ARCHITECTURE.md`.
 
+### Eligibility Engine (post-Frontend, data quality) ✅ COMPLETE
+
+- **Objective:** Make the ranking trustworthy. "Best Opportunities" should only show tokens that pass basic quality requirements — not rugged, inactive, or data-deficient tokens.
+- **Pipeline change:** Discover → Analyse → **Eligibility** → Opportunity Score → Rank. The eligibility gate runs AFTER full analysis, BEFORE opportunity scoring.
+- **Eligibility Engine** (`app/services/eligibility.py`): evaluates 12 configurable checks (pair exists, liquidity available/above minimum, price available, market cap available/above minimum, age within limit, holder count above minimum, 24h volume above minimum, risk score below maximum, not a honeypot, analysis confidence sufficient). Returns `EligibilityResult(eligible, rejection_reasons, warnings, confidence, evidence)`.
+- **Configuration:** All thresholds in `app/core/config.py` under `eligibility_*` prefix. Nothing hardcoded.
+- **Model changes:** `EligibilityResult` model; `RankedToken` extended with `eligible`, `excluded_from_ranking`, `rejection_reasons`, `eligibility_evidence`, `lock_status`, `lock_percentage`, `lock_provider`; `ScanResponse` extended with `excluded_tokens`.
+- **Market data fix:** `market_cap` falls back to `fdv` when DexScreener returns null `marketCap` — values are never silently dropped if available upstream.
+- **Liquidity lock on ranked tokens:** `RankedToken` now carries `lock_status`, `lock_percentage`, `lock_provider` from the full analysis. "Unknown" when unavailable, never blank.
+- **Evidence:** Each eligible token exposes human-readable reasons why it qualified (e.g. "Healthy liquidity", "Active trading", "Low rug risk", "Strong developer reputation", "Smart wallet accumulation").
+- **Dashboard / Scanner:** Only `eligible == true` tokens appear in `ranked_tokens`. Ineligible tokens are in `excluded_tokens` with rejection reasons, available for a future "Show Excluded" UI feature.
+- **Tests:** 27 tests covering eligible tokens, rugged tokens, no liquidity, missing market cap, dead trading pairs, stale price, failed analysis, age limits, edge cases. Full suite: 736 passed, 0 regressions.
+- **Files:** `app/core/config.py`, `app/models/token.py`, `app/services/eligibility.py` (new), `app/services/rug_analyzer.py`, `tests/test_eligibility.py` (new), `docs/ARCHITECTURE.md`, `docs/DATA_FLOW.md`, `ROADMAP.md`.
+
 ---
 
 ## Prioritized checklist (highest ROI → lowest)

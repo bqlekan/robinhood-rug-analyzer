@@ -48,10 +48,15 @@ lore (optional) → honeypot → score → developer reputation → developer ne
 intelligence (parallel sibling fetches: holders, DexScreener, contracts) → smart wallet
 reputations (parallel per smart wallet hit) → alpha timeline (pure, no I/O) → response.
 
-**Scan path** (`POST /scan`): cap the limit → `list_tokens` → drop established
-tokens → per token run a cheap `score_token_light`; **promote to full analysis**
-unless the token is confidently safe (known holder count `>=` floor AND light
-score below the promote threshold) → sort by risk descending.
+**Scan path** (`POST /scan`): cap the limit → discover recent candidates from
+DexScreener newest-pairs → drop established tokens → per token run a cheap
+`score_token_light`; **promote to full analysis** unless the token is confidently
+safe → full analysis → **eligibility gate** (`eligibility.evaluate`) classifies
+each token as eligible/ineligible → opportunity score only for eligible tokens →
+eligible tokens enter `ranked_tokens` sorted by alpha descending; ineligible tokens
+enter `excluded_tokens` with `rejection_reasons` → `ScanResponse`.
+
+**Pipeline order:** Discover → Analyse → **Eligibility** → Opportunity Score → Rank.
 
 **Degradation:** every external read returns `None`/`[]` on failure; a bad token
 in a scan is dropped, not fatal; the honeypot sim returns `"unknown"` rather
