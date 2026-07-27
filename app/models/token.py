@@ -46,6 +46,8 @@ class VolumeSnapshot(BaseModel):
     h6: float | None = None
     h1: float | None = None
     m5: float | None = None
+    buys: int | None = None
+    sells: int | None = None
 
 
 class PriceChangeSnapshot(BaseModel):
@@ -544,6 +546,10 @@ class RankedToken(BaseModel):
     holder_count: int | None = None
     liquidity_usd: float | None = None
     market_cap: float | None = None
+    fdv: float | None = None
+    volume_h24: float | None = None
+    price_usd: str | None = None
+    price_change_h24: float | None = None
     age_hours: float | None = None
     age_days: float | None = None
     top_signal: str | None = None

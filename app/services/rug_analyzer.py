@@ -36,6 +36,7 @@ def _build_market_data(pair: dict | None) -> TokenMarketData | None:
     quote_token = pair.get("quoteToken") or {}
     liquidity = pair.get("liquidity") or {}
     volume = pair.get("volume") or {}
+    txns_h24 = ((pair.get("txns") or {}).get("h24") or {})
     price_change = pair.get("priceChange") or {}
     info = pair.get("info") or {}
 
@@ -54,7 +55,7 @@ def _build_market_data(pair: dict | None) -> TokenMarketData | None:
         base_token_symbol=base_token.get("symbol"),
         quote_token_symbol=quote_token.get("symbol"),
         price_usd=pair.get("priceUsd"),
-        market_cap=to_float(pair.get("marketCap")) or to_float(pair.get("fdv")),
+        market_cap=mc if (mc := to_float(pair.get("marketCap"))) is not None else to_float(pair.get("fdv")),
         fdv=to_float(pair.get("fdv")),
         liquidity=LiquiditySnapshot(
             usd=to_float(liquidity.get("usd")),
@@ -66,6 +67,8 @@ def _build_market_data(pair: dict | None) -> TokenMarketData | None:
             h6=to_float(volume.get("h6")),
             h1=to_float(volume.get("h1")),
             m5=to_float(volume.get("m5")),
+            buys=txns_h24.get("buys"),
+            sells=txns_h24.get("sells"),
         ),
         price_change=PriceChangeSnapshot(
             h24=to_float(price_change.get("h24")),
@@ -297,6 +300,20 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
 
     best_pair = choose_best_pair(pairs)
     market_data = _build_market_data(best_pair)
+
+    if market_data:
+        _missing = [f for f, v in [
+            ("market_cap", market_data.market_cap),
+            ("fdv", market_data.fdv),
+            ("price_usd", market_data.price_usd),
+            ("volume_h24", market_data.volume.h24 if market_data.volume else None),
+            ("price_change_h24", market_data.price_change.h24 if market_data.price_change else None),
+            ("liquidity_usd", market_data.liquidity.usd if market_data.liquidity else None),
+            ("buys", market_data.volume.buys if market_data.volume else None),
+            ("sells", market_data.volume.sells if market_data.volume else None),
+        ] if v is None]
+        if _missing:
+            logger.debug("market_data missing fields for %s: %s", normalized, _missing)
 
     data_sources: list[str] = ["DexScreener"] if market_data else []
     if token_info or address_info or holders_raw:
@@ -671,6 +688,10 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             holder_count=result.holders.holder_count if result.holders else None,
             liquidity_usd=result.market_data.liquidity.usd if result.market_data and result.market_data.liquidity else None,
             market_cap=result.market_data.market_cap if result.market_data else None,
+            fdv=result.market_data.fdv if result.market_data else None,
+            volume_h24=result.market_data.volume.h24 if result.market_data and result.market_data.volume else None,
+            price_usd=result.market_data.price_usd if result.market_data else None,
+            price_change_h24=result.market_data.price_change.h24 if result.market_data and result.market_data.price_change else None,
             age_hours=result.token_age.age_hours if result.token_age else None,
             age_days=result.token_age.age_days if result.token_age else None,
             top_signal=top_signal,
