@@ -43,7 +43,11 @@ async def analyze_token(payload: TokenAnalysisRequest) -> TokenAnalysisResponse:
 @router.post("/scan", response_model=ScanResponse)
 async def scan_tokens(payload: ScanRequest) -> ScanResponse:
     """Scan active Robinhood Chain tokens and return a risk-ranked list."""
-    return await scan_and_rank(payload.limit, include_lore=payload.include_lore)
+    return await scan_and_rank(
+        page=payload.page,
+        page_size=payload.effective_page_size(),
+        include_lore=payload.include_lore,
+    )
 
 
 @router.get("/watchlist", response_model=WatchlistResponse)

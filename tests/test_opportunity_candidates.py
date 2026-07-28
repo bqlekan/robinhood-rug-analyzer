@@ -73,7 +73,7 @@ def test_stale_launch_passes_discovery(monkeypatch):
             addr_stale: _dex_pair(addr_stale, created_ms=now_ms - 90 * 86_400_000),
             addr_fresh: _dex_pair(addr_fresh, created_ms=now_ms - 1 * 86_400_000),
         })
-    cands, _ = _run(discover_candidates(limit=5))
+    cands, _ = _run(discover_candidates())
     addrs = [c.address_hash for c in cands]
     assert addr_fresh in addrs
     assert addr_stale in addrs
@@ -90,7 +90,7 @@ def test_low_liquidity_passes_discovery(monkeypatch):
             addr_dead: _dex_pair(addr_dead, liq_usd=10.0),
             addr_live: _dex_pair(addr_live, liq_usd=5000.0),
         })
-    cands, _ = _run(discover_candidates(limit=5))
+    cands, _ = _run(discover_candidates())
     addrs = [c.address_hash for c in cands]
     assert addr_live in addrs
     assert addr_dead in addrs
@@ -98,7 +98,7 @@ def test_low_liquidity_passes_discovery(monkeypatch):
 
 def test_no_tokens_returns_empty(monkeypatch):
     _stub_single(monkeypatch, tokens=[])
-    cands, _ = _run(discover_candidates(limit=5))
+    cands, _ = _run(discover_candidates())
     assert cands == []
 
 
@@ -110,6 +110,6 @@ def test_established_tokens_skipped(monkeypatch):
             _blockscout_token(addr_weth, name="Wrapped Ether", symbol="WETH"),
             _blockscout_token(addr_new, name="New Token", symbol="NEW"),
         ])
-    cands, _ = _run(discover_candidates(limit=5))
+    cands, _ = _run(discover_candidates())
     assert len(cands) == 1
     assert cands[0].symbol == "NEW"

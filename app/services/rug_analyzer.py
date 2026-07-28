@@ -26,10 +26,18 @@ from app.services import alpha_timeline, analyzers, blockscout_client, candidate
 from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
-from app.services.opportunity_score import score_opportunity
+from app.services.opportunity_score import score_opportunity, score_opportunity_lite
 from app.services.scoring import LIMITATIONS, score_token, score_token_light
+from app.services.cache import TTLCache, MISS
 
 logger = logging.getLogger(__name__)
+
+# D3: deep analysis result cache — avoids re-analyzing the same token within the TTL.
+# Sub-call caches (Blockscout, DexScreener, RPC) continue independently.
+_deep_cache = TTLCache(
+    ttl=settings.deep_analysis_cache_ttl,
+    max_size=settings.http_cache_max_size,
+)
 
 
 def _enrichment_status(report: "EnrichmentReport | None") -> str:
@@ -689,26 +697,19 @@ def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
     return _created_ms, int(time.time() * 1000)
 
 
-async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
-    """Pull recent Robinhood Chain token launches, analyze each, and rank by risk score."""
-    limit = min(limit, settings.scan_max_tokens)
+async def scan_and_rank(page: int = 1, page_size: int = 15, include_lore: bool = False) -> ScanResponse:
+    """7-stage opportunity pipeline: discover → lite score → select → deep analyze → score → rank → paginate.
 
-    # D2: multi-source candidate discovery with diagnostics.
-    discovered, discovery_diag = await candidate_discovery.discover_candidates(limit)
+    D3: page_size controls ONLY how many ranked results are returned. It NEVER
+    affects discovery, prioritization, analysis, or ranking. Pool sizes come
+    from settings (scan_candidate_pool, scan_light_pool, scan_deep_pool).
+    """
+    import time as _time
 
-    # Convert DiscoveredCandidate -> dict for scan_one (keeps existing deep_one interface)
-    tokens = [
-        {
-            "address_hash": c.address_hash,
-            "name": c.name,
-            "symbol": c.symbol,
-            "holders_count": c.holder_count,
-            "source": c.source,
-        }
-        for c in discovered
-    ]
+    # ── Stage 1: Discover ALL candidates (no limit parameter) ──
+    discovered, discovery_diag = await candidate_discovery.discover_candidates()
 
-    if not tokens:
+    if not discovered:
         return ScanResponse(
             chain=chains.active().chain_name,
             status="no_tokens",
@@ -717,17 +718,50 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             ranked_tokens=[],
             limitations=LIMITATIONS,
             discovery=discovery_diag,
+            page=page,
+            page_size=page_size,
         )
 
+    # ── Stage 2: Lightweight prioritization (zero RPC) ──
+    for c in discovered:
+        c.lite_score = score_opportunity_lite(c)
+    discovery_diag.light_scored = len(discovered)
+
+    # ── Stage 3: Sort by lite score, select top N for deep analysis ──
+    discovered.sort(key=lambda c: c.lite_score, reverse=True)
+    deep_pool = min(settings.scan_deep_pool, len(discovered))
+    deep_candidates = discovered[:deep_pool]
+
+    # Convert to dict format for scan_one (keeps existing deep_one interface)
+    tokens = [
+        {
+            "address_hash": c.address_hash,
+            "name": c.name,
+            "symbol": c.symbol,
+            "holders_count": c.holder_count,
+            "source": c.source,
+        }
+        for c in deep_candidates
+    ]
+
+    # ── Stage 4-5: Deep analysis + scoring ──
     # Bound concurrent deep analyses so escalation cannot exhaust the API budget.
     deep_sem = asyncio.Semaphore(max(1, settings.scan_max_deep_analyses))
     _hist: dict[str, int] = {
         "age_too_old": 0, "no_dex_pair": 0, "timeout": 0,
         "no_liquidity": 0, "no_market_data": 0, "api_failure": 0,
-        "other_exclusion": 0, "passed": 0,
+        "other_exclusion": 0, "passed": 0, "cache_hit": 0,
     }
 
     async def deep_one(token: dict, address: str) -> RankedToken | None:
+        # D3: check deep analysis cache first (zero RPC on hit)
+        cache_key = f"deep:{address.lower()}"
+        if settings.deep_analysis_cache_ttl > 0:
+            cached = _deep_cache.get(cache_key)
+            if cached is not MISS:
+                _hist["cache_hit"] += 1
+                return cached
+
         logger.info(
             "AUDIT_ENTRY contract=%s symbol=%s source=%s holders=%s",
             address, token.get("symbol"), token.get("source"), token.get("holders_count"),
@@ -836,7 +870,7 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
         if composite is not None:
             composite = max(0, min(100, composite))
 
-        return RankedToken(
+        ranked_token = RankedToken(
             contract_address=address,
             name=token.get("name"),
             symbol=token.get("symbol"),
@@ -877,6 +911,12 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             data_confidence=result.enrichment.data_confidence if result.enrichment else None,
             enrichment_status=_enrichment_status(result.enrichment) if result.enrichment else None,
         )
+
+        # D3: cache the result (None from errors is NOT cached — retried next scan)
+        if settings.deep_analysis_cache_ttl > 0:
+            _deep_cache.set(cache_key, ranked_token)
+
+        return ranked_token
 
     def _light_ranked(token: dict, address: str, light) -> RankedToken:
         """Lightweight result for a token the pre-screen skipped (no deep fetches)."""
@@ -919,25 +959,42 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             return await deep_one(token, address)
         return _light_ranked(token, address, light)
 
+    t0 = _time.monotonic()
     results = await asyncio.gather(*(scan_one(t) for t in tokens))
+    deep_duration_ms = int((_time.monotonic() - t0) * 1000)
 
     # ── AUDIT: enrichment rejection histogram ─────────────────────────
     logger.info("=" * 72)
-    logger.info("ENRICHMENT AUDIT HISTOGRAM  (candidates entered: %d)", len(tokens))
+    logger.info("PIPELINE AUDIT  (discovered=%d  lite_scored=%d  deep_pool=%d)",
+                discovery_diag.enriched, discovery_diag.light_scored, len(tokens))
     for _k, _v in _hist.items():
         logger.info("  %-22s : %d", _k, _v)
     _accounted = sum(_hist.values())
     logger.info("  %-22s : %d", "TOTAL accounted", _accounted)
     logger.info("  %-22s : %d", "scan_one returned None", sum(1 for r in results if r is None))
+    logger.info("  %-22s : %dms", "deep_analysis_duration", deep_duration_ms)
     logger.info("=" * 72)
     # ── END AUDIT ─────────────────────────────────────────────────────
 
+    # ── Stage 6: Rank — only hard-exclude confirmed rugs/dead/blacklisted ──
     all_tokens = [r for r in results if r is not None]
     ranked = [r for r in all_tokens if r.qualification_level != "excluded"]
     excluded = [r for r in all_tokens if r.qualification_level == "excluded"]
     ranked.sort(key=lambda r: (-(r.composite_score or 0), -(r.alpha_score or 0), r.risk_score))
 
+    # ── Stage 7: Paginate (display only — never affects prior stages) ──
+    total_ranked = len(ranked)
+    total_pages = max(1, math.ceil(total_ranked / page_size))
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    page_tokens = ranked[start:start + page_size]
+
     # Finalize diagnostics
+    cache_hits = _hist.get("cache_hit", 0)
+    discovery_diag.deep_analyzed = len(all_tokens)
+    discovery_diag.deep_cache_hits = cache_hits
+    discovery_diag.deep_cache_misses = len(tokens) - cache_hits
+    discovery_diag.deep_analysis_duration_ms = deep_duration_ms
     discovery_diag.reached_qualification = len(all_tokens)
     discovery_diag.reached_ranking = len(ranked)
     discovery_diag.excluded = len(excluded)
@@ -945,10 +1002,14 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
     return ScanResponse(
         chain=chains.active().chain_name,
         status="scan_completed",
-        message=f"Analyzed and ranked {len(ranked)} Robinhood Chain tokens by rug risk.",
+        message=f"Analyzed {len(all_tokens)}, ranked {total_ranked}. Page {page}/{total_pages}.",
         analyzed=len(all_tokens),
-        ranked_tokens=ranked,
+        ranked_tokens=page_tokens,
         excluded_tokens=excluded,
         limitations=LIMITATIONS,
         discovery=discovery_diag,
+        page=page,
+        page_size=page_size,
+        total_ranked=total_ranked,
+        total_pages=total_pages,
     )

@@ -211,9 +211,9 @@ opportunity score tier colors). The frontend is an **Opportunity Intelligence da
 ### 3.2 Analysis pipeline services
 
 **`app/services/rug_analyzer.py`** — orchestrator that composes all sub-analyses.
-- Public: `analyze_token_contract(contract_address, include_lore=True)`, `scan_and_rank(limit, include_lore=False)`.
-- Dependencies: `analyzers`, `blockscout_client`, `dexscreener_client`, `contract_intel`, `honeypot_sim`, `launchpad_registry`, `rpc_client`, `wallet_intel`, `watchlist_store`, `lore_client`, `scoring`.
-- Config: `holder_sample_size`, `holder_scan_pages`, `transfer_scan_pages`, `scan_max_tokens`, `scan_tiering_enabled`, `scan_established_holder_floor`, `scan_light_promote_threshold`, `scan_max_deep_analyses`, `chain_name`.
+- Public: `analyze_token_contract(contract_address, include_lore=True)`, `scan_and_rank(page=1, page_size=15, include_lore=False)`.
+- Dependencies: `analyzers`, `blockscout_client`, `dexscreener_client`, `contract_intel`, `honeypot_sim`, `launchpad_registry`, `rpc_client`, `wallet_intel`, `watchlist_store`, `lore_client`, `scoring`, `opportunity_score`, `cache`.
+- Config: `holder_sample_size`, `holder_scan_pages`, `transfer_scan_pages`, `scan_candidate_pool`, `scan_light_pool`, `scan_deep_pool`, `deep_analysis_cache_ttl`, `scan_tiering_enabled`, `scan_established_holder_floor`, `scan_light_promote_threshold`, `scan_max_deep_analyses`, `chain_name`.
 - Extension: insert a fetch/analyze step and thread its typed result into `score_token` (see section 13).
 - Failure modes: raises `ValueError` on invalid address; every sub-fetch degrades to `None`/`[]`; `scan_and_rank` wraps each deep analysis so one bad token is dropped; funder/creator traces use `gather(return_exceptions=True)`.
 
@@ -774,15 +774,22 @@ router is mapped, and the launchpad registries are empty by design.
 17. **Snapshot (M19)** — after scoring, `snapshot_store.record_snapshot` persists score + metrics, pruned to `snapshot_history_retain`.
 18. **Return** `TokenAnalysisResponse`.
 
-### 9.2 `scan_and_rank` and scan tiering
+### 9.2 `scan_and_rank` — 7-stage opportunity pipeline (D3)
 
-1. `limit = min(limit, scan_max_tokens)`.
-2. **Multi-source candidate discovery (D2)** — `candidate_discovery.discover_candidates(limit)` runs all enabled providers concurrently (Blockscout new tokens, Blockscout new contracts, launchpad factory transactions, DexScreener search as supplementary), merges into a single pool, deduplicates by lowercased address, filters established tokens, then enriches each candidate with DexScreener market data and applies age/liquidity gates. Returns `(candidates, DiscoveryDiagnostics)`.
-3. A `Semaphore(scan_max_deep_analyses)` bounds concurrent deep analyses.
-4. Per token: if tiering is off → always deep. Else compute holder count and `score_token_light`. A token is **confidently safe** only when holder count is known AND `>= scan_established_holder_floor` AND light score `< scan_light_promote_threshold`. Anything not confidently safe is **promoted** to deep analysis.
-5. Deep analysis runs under the semaphore, wrapped so one bad token is dropped.
-6. **Qualification gate** — `eligibility.evaluate(result)` classifies each analyzed token with a `qualification_level` (excellent/good/speculative/high_risk/excluded) and `confidence_score` (0–100). Only `excluded` tokens are removed from `ranked_tokens`; all others remain rankable. Excluded tokens are returned in `excluded_tokens` with `rejection_reasons`.
-7. Sort ranked tokens by `alpha_score` descending, `confidence_score` descending, then `risk_score` ascending → `ScanResponse`.
+The pipeline decouples discovery from display. `page_size` controls only how
+many ranked results are returned; it never affects discovery, scoring, or
+analysis. Pool sizes come from config: `scan_candidate_pool`,
+`scan_light_pool`, `scan_deep_pool`.
+
+1. **Discover** — `candidate_discovery.discover_candidates()` runs all enabled providers concurrently (Blockscout tokens by market cap, fiat value, holder count; launchpad factories), merges, deduplicates by lowercased address (bumping `source_count` on duplicates), filters established tokens/zero holders, enriches top `scan_light_pool` candidates with DexScreener market data. Returns `(candidates, DiscoveryDiagnostics)`.
+2. **Lite score** — `score_opportunity_lite(candidate)` assigns a 0–100 priority using only discovery metadata (pair existence, liquidity, holder count, freshness, market cap, source diversity). Zero RPC calls.
+3. **Select** — Sort by `lite_score` desc, take top `scan_deep_pool` (default 30) for deep analysis.
+4. **Deep analyse** — Per token: if tiering is off → always deep. Else compute `score_token_light`. Confidently safe tokens (known holders ≥ floor, low risk) get a lightweight result. Everything else promotes to `analyze_token_contract` under `Semaphore(scan_max_deep_analyses)`. A `TTLCache` (`deep_analysis_cache_ttl`, default 300s) caches `RankedToken` results by address — cache hit = zero RPC.
+5. **Score** — `score_opportunity(result)` and `eligibility.evaluate(result)` produce alpha/qualification/confidence/dimension scores.
+6. **Rank** — Only `excluded` tokens (confirmed rugs, dead contracts, honeypots, blacklisted) are removed. All others ranked by `(composite_score desc, alpha_score desc, risk_score asc)`.
+7. **Paginate** — `page` and `page_size` slice the ranked list. `ScanResponse` includes `total_ranked`, `total_pages`, and `page`.
+
+**Observability:** `DiscoveryDiagnostics` reports `light_scored`, `deep_analyzed`, `deep_cache_hits`, `deep_cache_misses`, `deep_analysis_duration_ms`, plus existing `reached_qualification`, `reached_ranking`, `excluded` counts.
 
 ### 9.2.1 Qualification Engine (`app/services/eligibility.py`)
 
@@ -818,7 +825,7 @@ developer network (10), smart wallet activity (10), holder quality (10), age (10
 (e.g. "Liquidity $5,000", "Active trading", "Low rug risk",
 "Strong developer reputation", "Smart wallet accumulation").
 
-**Pipeline position:** Discover (multi-source) → Enrich (DexScreener) → Analyse → **Qualification** → Opportunity Score → Rank.
+**Pipeline position:** Discover → Enrich (DexScreener) → Lite Score → Select → Deep Analyse → **Qualification** → Opportunity Score → Rank → Paginate.
 
 ### 9.3 Risk scoring model (`score_token`)
 
@@ -1136,6 +1143,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M26 — Notification transport layer | Done | `notifications.py` gains three HTTP transports (`WebhookProvider` incl. optional HMAC signature, `TelegramProvider`, `DiscordWebhookProvider`) + shared retry/backoff in `_deliver_one`; all plug into the existing M23-H registry/dispatcher/dedupe. Infra only — no new intelligence; providers know nothing of KOL/scoring/clustering, they just ship a ready-made `Notification` |
 | M27 — Watchlist Alerts & Intelligent Notifications | Done | `models/alerts.py` (10 alert types, rules, per-token overrides) + `alert_engine.py` (event→alert mapping, severity/cooldown/dedupe/aggregation, human-readable messages); delivers via reused `notifications.deliver`. Wired into `token_monitor.run_cycle` + `kol_watchlist.capture_following`. Connects existing events to rules — no new intelligence/events/scoring |
 | D2 — Multi-source candidate discovery | Done | `candidate_discovery.py` (provider registry: Blockscout tokens/contracts, launchpad plugin engine, DexScreener search as supplementary); `launchpad_discovery.py` (plugin framework: strategy registry + `EventLogDiscovery` / `FactoryTransactionDiscovery` / `ContractCreationDiscovery`); `rpc_client` gains `get_logs` + `get_logs_chunked` (reusable, with retries + checkpoints); `rpc_checkpoint.py` (JSON-file persistent checkpoints); `launchpad_registry` gains `get_launchpad_definitions`; `LaunchpadDefinition` model in `token.py`; `DiscoveryDiagnostics` model attached to `ScanResponse`. DexScreener demoted from primary discovery source to market-data enrichment only |
+| D3 — Pipeline decoupling (discovery ↔ display) | Done | `scan_and_rank` refactored to 7-stage pipeline (discover → lite score → select → deep analyse → score → rank → paginate); `score_opportunity_lite` (zero-RPC prioritization); deep analysis `TTLCache`; `source_count` tracking across providers; `ScanRequest` pagination (`page`, `page_size`, backward-compat `limit`); `ScanResponse` gains `total_ranked`, `total_pages`; `DiscoveryDiagnostics` gains `light_scored`, `deep_analyzed`, cache hit/miss, duration. Config: `scan_candidate_pool`, `scan_light_pool`, `scan_deep_pool`, `deep_analysis_cache_ttl` |
 
 **Not yet built:** any **second chain** — M22 shipped the abstraction
 (`core/chains.py`), but only Robinhood Chain is registered. All milestones

@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     market_cache_ttl_seconds: float = 15.0
     # Cap how many tokens the ranked scanner analyzes per request so a single
     # scan cannot exhaust the free Blockscout rate budget.
+    # DEPRECATED: replaced by scan_deep_pool. Kept so existing .env files don't error.
     scan_max_tokens: int = 15
     # How many top holders to pull for distribution + cluster analysis (single page cap).
     holder_sample_size: int = 50
@@ -79,9 +80,26 @@ class Settings(BaseSettings):
     # The ranked scanner is an OPPORTUNITY scanner: it should surface newly-launched
     # tokens from multiple on-chain sources, not rely on a single endpoint.
     scan_prefer_recent_launches: bool = True
+    # DEPRECATED: replaced by scan_candidate_pool. Kept so existing .env files don't error.
     scan_candidate_pool_size: int = 60
     scan_max_launch_age_days: float = 3.0
     scan_min_candidate_liquidity_usd: float = 500.0
+
+    # --- Pipeline pool sizes (D3: decoupled discovery-to-display) ---
+    # Discovery finds broadly, lite scoring ranks cheaply, deep analysis runs on a
+    # fixed pool. The UI page_size NEVER affects these — it only slices results.
+    scan_candidate_pool: int = 300     # Stage 1: max candidates after merge+dedup
+    scan_light_pool: int = 150         # Stage 2: top N enriched with DexScreener
+    scan_deep_pool: int = 30           # Stage 3: top N sent to deep analysis (free-tier safe)
+
+    # Deep analysis result cache TTL (seconds). Re-analyzing the same token within
+    # this window returns the cached RankedToken, saving all RPC calls. Sub-call
+    # caches (Blockscout, DexScreener, RPC) continue independently. 0 = disabled.
+    deep_analysis_cache_ttl: float = 300.0
+
+    # Pagination defaults (display only — never affect discovery/analysis).
+    api_default_page_size: int = 15
+    dashboard_default_page_size: int = 5
 
     # --- Multi-source candidate discovery providers ---
     # Each provider can be independently toggled. Candidates from all enabled

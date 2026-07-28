@@ -32,7 +32,7 @@ def _run(coro):
 
 
 def _stub_discovery(monkeypatch, tokens):
-    async def fake_discover(limit):
+    async def fake_discover():
         cands = [
             candidate_discovery.DiscoveredCandidate(
                 address_hash=t["address_hash"],
@@ -41,7 +41,7 @@ def _stub_discovery(monkeypatch, tokens):
                 holder_count=t.get("holders_count"),
                 source="test",
             )
-            for t in tokens[:limit]
+            for t in tokens
         ]
         return cands, DiscoveryDiagnostics()
 
@@ -78,7 +78,7 @@ class TestMissingDataProducesNone:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.dev_reputation_score is None
         assert t.dev_network_score is None
@@ -101,7 +101,7 @@ class TestMissingDataProducesNone:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.holder_quality_score is None
 
@@ -118,7 +118,7 @@ class TestMissingDataProducesNone:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.liquidity_score is None
 
@@ -141,7 +141,7 @@ class TestMissingDataProducesNone:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.momentum_score is None
 
@@ -173,7 +173,7 @@ class TestCompositeSkipsNone:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         # With old code, dev_rep=0 and dev_net=0 would drag composite down.
         # Now they're None and excluded, so composite should be higher.
@@ -197,7 +197,7 @@ class TestCompositeSkipsNone:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         # This token should be excluded (no market data), but composite should still
         # have a value because security and opportunity always exist.
         assert len(resp.excluded_tokens) == 1

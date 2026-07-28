@@ -29,11 +29,11 @@ export const apiClient = {
       body: JSON.stringify({ contract_address: contractAddress, include_lore: includeLore }),
     }),
 
-  scan: (limit, includeLore) =>
+  scan: (pageSize, includeLore, page = 1) =>
     _fetch("/api/v1/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ limit, include_lore: includeLore }),
+      body: JSON.stringify({ page_size: pageSize, include_lore: includeLore, page }),
     }),
 
   watchlist: (kind, sort) => {

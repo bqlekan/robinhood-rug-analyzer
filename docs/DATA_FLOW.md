@@ -48,21 +48,30 @@ lore (optional) → honeypot → score → developer reputation → developer ne
 intelligence (parallel sibling fetches: holders, DexScreener, contracts) → smart wallet
 reputations (parallel per smart wallet hit) → alpha timeline (pure, no I/O) → response.
 
-**Scan path** (`POST /scan`): cap the limit → **multi-source candidate discovery**
-(D2: Blockscout new tokens + new contracts + **plugin-based launchpad engine**
-(iterates configured `LaunchpadDefinition` entries and dispatches by
-`discovery_mode` to `EventLogDiscovery` / `FactoryTransactionDiscovery` /
-`ContractCreationDiscovery`) + DexScreener search as supplementary, merged,
-deduplicated, established tokens filtered) →
-**enrich** each candidate with DexScreener market data (price, liquidity, volume,
-pair metadata) → apply age + liquidity gates → per token run a cheap
-`score_token_light`; **promote to full analysis** unless the token is confidently
-safe → full analysis → **qualification engine** (`eligibility.evaluate`) classifies
-each token with a `qualification_level` (excellent/good/speculative/high_risk/excluded)
-and `confidence_score` (0–100) → opportunity score for all non-excluded tokens →
-non-excluded tokens enter `ranked_tokens` sorted by alpha desc, confidence desc,
-risk asc; excluded tokens enter `excluded_tokens` with `rejection_reasons` →
-`ScanResponse` (now includes `DiscoveryDiagnostics`).
+**Scan path** (`POST /scan`): **7-stage opportunity pipeline (D3)** —
+1. **Discover** — multi-source candidate discovery
+(D2: Blockscout tokens by market cap, fiat value, holder count + **plugin-based
+launchpad engine** (iterates configured `LaunchpadDefinition` entries and
+dispatches by `discovery_mode` to `EventLogDiscovery` /
+`FactoryTransactionDiscovery` / `ContractCreationDiscovery`), merged,
+deduplicated with `source_count` tracking, established tokens filtered) →
+2. **Enrich** — top `scan_light_pool` candidates enriched with DexScreener
+market data (price, liquidity, volume, pair metadata) →
+3. **Lite score** — `score_opportunity_lite` assigns 0–100 priority using only
+discovery metadata (zero RPC) →
+4. **Select** — sort by `lite_score` desc, take top `scan_deep_pool` (default 30) →
+5. **Deep analyse** — per token: `scan_tiering` promotes uncertain tokens to
+full `analyze_token_contract`; `TTLCache` (`deep_analysis_cache_ttl`) avoids
+re-analysis within the cache window → **qualification engine**
+(`eligibility.evaluate`) classifies each token with a `qualification_level`
+(excellent/good/speculative/high_risk/excluded) and `confidence_score` (0–100) →
+opportunity score for all tokens →
+6. **Rank** — only `excluded` tokens removed; all others ranked by
+`(composite_score desc, alpha_score desc, risk_score asc)` →
+7. **Paginate** — `page` and `page_size` slice the ranked list (never affect
+prior stages) → `ScanResponse` includes `total_ranked`, `total_pages`,
+`DiscoveryDiagnostics` with `light_scored`, `deep_analyzed`, cache hit/miss
+counts, and `deep_analysis_duration_ms`.
 
 ### Launchpad discovery plugin flow
 

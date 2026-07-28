@@ -220,3 +220,73 @@ def score_opportunity(result: TokenAnalysisResponse) -> OpportunityResult:
         alpha_level=_alpha_level(alpha),
         signals=signals,
     )
+
+
+# ---------------------------------------------------------------------------
+# Lite scoring — zero-RPC prioritization from discovery metadata only (D3)
+# ---------------------------------------------------------------------------
+
+# ponytail: inline weights, not a config setting — YAGNI until someone needs to tune lite
+# scoring independently. Upgrade path: move to settings.lite_score_weights.
+_LITE_WEIGHTS = {
+    "has_pair": 15,
+    "liquidity": 25,
+    "holder_count": 15,
+    "freshness": 15,
+    "market_cap": 15,
+    "source_diversity": 15,
+}
+
+
+def score_opportunity_lite(candidate) -> int:
+    """Cheap 0-100 prioritization from discovery-time data only. No RPC calls.
+
+    Uses fields already on DiscoveredCandidate (holder_count, pair dict,
+    source_count). Reuses the same log-scale formulas as the full scorers.
+    """
+    pair = candidate.pair or {}
+    score = 0
+    total_w = 0
+
+    def _add(value, weight):
+        nonlocal score, total_w
+        if value is not None:
+            score += value * weight
+            total_w += weight
+
+    # Has DexScreener pair
+    _add(100 if candidate.pair else 0, _LITE_WEIGHTS["has_pair"])
+
+    # Liquidity from pair (same formula as _score_liquidity)
+    liq = (pair.get("liquidity") or {}).get("usd")
+    if liq is not None and liq > 0:
+        _add(min(100, int(math.log10(max(liq, 1)) / math.log10(100_000) * 100)), _LITE_WEIGHTS["liquidity"])
+    else:
+        _add(0, _LITE_WEIGHTS["liquidity"])
+
+    # Holder count
+    hc = candidate.holder_count
+    if hc is not None and hc > 0:
+        _add(min(100, int(math.log10(max(hc, 1)) / math.log10(10_000) * 100)), _LITE_WEIGHTS["holder_count"])
+
+    # Freshness from pair creation (same formula as _score_freshness)
+    created = pair.get("pairCreatedAt")
+    if created:
+        import time as _time
+        age_ms = max(0, int(_time.time() * 1000) - int(created))
+        max_age_ms = settings.scan_max_launch_age_days * 86_400_000
+        if max_age_ms > 0:
+            _add(max(0, int(100 * (1 - age_ms / max_age_ms))), _LITE_WEIGHTS["freshness"])
+        else:
+            _add(50, _LITE_WEIGHTS["freshness"])
+
+    # Market cap from pair
+    mc = pair.get("marketCap") or pair.get("fdv")
+    if mc is not None and mc > 0:
+        _add(min(100, int(math.log10(max(mc, 1)) / math.log10(1_000_000) * 100)), _LITE_WEIGHTS["market_cap"])
+
+    # Source diversity (multiple providers found this address)
+    sc = getattr(candidate, "source_count", 1)
+    _add(min(100, sc * 33), _LITE_WEIGHTS["source_diversity"])
+
+    return int(score / total_w) if total_w > 0 else 0

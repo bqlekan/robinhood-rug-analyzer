@@ -26,7 +26,7 @@ def _run(coro):
 
 
 def _stub_discovery(monkeypatch, tokens):
-    async def fake_discover(limit):
+    async def fake_discover():
         cands = [
             candidate_discovery.DiscoveredCandidate(
                 address_hash=t["address_hash"],
@@ -35,7 +35,7 @@ def _stub_discovery(monkeypatch, tokens):
                 holder_count=t.get("holders_count"),
                 source="test",
             )
-            for t in tokens[:limit]
+            for t in tokens
         ]
         return cands, DiscoveryDiagnostics()
 
@@ -77,14 +77,14 @@ class TestDimensionScores:
     def test_security_score_populated(self, monkeypatch):
         _stub_discovery(monkeypatch, [{"address_hash": "0xabc", "name": "T", "holders_count": 10}])
         _stub_analysis(monkeypatch, risk=30)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.security_score == 70  # 100 - 30
 
     def test_liquidity_score_populated(self, monkeypatch):
         _stub_discovery(monkeypatch, [{"address_hash": "0xabc", "name": "T", "holders_count": 10}])
         _stub_analysis(monkeypatch, liq=10000.0)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.liquidity_score is not None
         assert t.liquidity_score > 0
@@ -92,7 +92,7 @@ class TestDimensionScores:
     def test_dev_scores_populated(self, monkeypatch):
         _stub_discovery(monkeypatch, [{"address_hash": "0xabc", "name": "T", "holders_count": 10}])
         _stub_analysis(monkeypatch, dev_score=75, net_score=60)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.dev_reputation_score == 75
         assert t.dev_network_score == 60
@@ -100,21 +100,21 @@ class TestDimensionScores:
     def test_smart_wallet_score(self, monkeypatch):
         _stub_discovery(monkeypatch, [{"address_hash": "0xabc", "name": "T", "holders_count": 10}])
         _stub_analysis(monkeypatch, smart_count=3)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.smart_wallet_score == 75  # 3 * 25
 
     def test_holder_quality_score(self, monkeypatch):
         _stub_discovery(monkeypatch, [{"address_hash": "0xabc", "name": "T", "holders_count": 10}])
         _stub_analysis(monkeypatch, top10=60.0)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.holder_quality_score == 40  # 100 - 60
 
     def test_composite_score_populated(self, monkeypatch):
         _stub_discovery(monkeypatch, [{"address_hash": "0xabc", "name": "T", "holders_count": 10}])
         _stub_analysis(monkeypatch)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         t = resp.ranked_tokens[0]
         assert t.composite_score is not None
         assert 0 <= t.composite_score <= 100
@@ -147,7 +147,7 @@ class TestDimensionScores:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake_analyze)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         assert len(resp.ranked_tokens) == 2
         assert resp.ranked_tokens[0].composite_score >= resp.ranked_tokens[1].composite_score
 
@@ -155,7 +155,7 @@ class TestDimensionScores:
         """Excluded tokens should still have alpha_score and dimension scores."""
         _stub_discovery(monkeypatch, [{"address_hash": "0xrug", "name": "Rug", "holders_count": 10}])
         _stub_analysis(monkeypatch, risk=95)  # proven rug → excluded
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         assert len(resp.excluded_tokens) == 1
         t = resp.excluded_tokens[0]
         assert t.alpha_score is not None
@@ -181,7 +181,7 @@ class TestNoLiquidityClassification:
             )
 
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake_analyze)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         assert len(resp.ranked_tokens) == 1
         assert resp.ranked_tokens[0].qualification_level == "high_risk"
         assert len(resp.excluded_tokens) == 0

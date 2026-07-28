@@ -12,7 +12,7 @@ const statRow = document.querySelector("#dashboard-watchlist");
 const topRiskBox = document.querySelector("#dashboard-top-risk");
 const quickForm = document.querySelector("#quick-analyze-form");
 
-const TOP_LIMIT = 5;
+const PAGE_SIZE = 5;
 
 async function loadBanner() {
   chainBox.innerHTML = `
@@ -64,7 +64,7 @@ async function loadTopOpportunities() {
     <h2 class="dash-section-title">Best opportunities right now</h2>
     ${skeletonCards(3)}`;
   try {
-    const data = await apiClient.scan(TOP_LIMIT, false);
+    const data = await apiClient.scan(PAGE_SIZE, false);
     let tokens = data.ranked_tokens || [];
     tokens.sort((a, b) => (b.alpha_score ?? 0) - (a.alpha_score ?? 0));
     if (!tokens.length) {

@@ -28,8 +28,19 @@ class TokenAnalysisRequest(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    limit: int = Field(15, ge=1, le=50, description="How many tokens to analyze and rank")
+    # D3: limit is a backward-compat alias for page_size. Old callers sending
+    # {"limit": 5} get identical visible behaviour (5 results on page 1), but
+    # the backend now discovers broadly and paginates after ranking.
+    limit: int | None = Field(None, ge=1, le=200, description="Deprecated: use page_size")
+    page: int = Field(1, ge=1, description="1-indexed page number")
+    page_size: int = Field(15, ge=1, le=200, description="Results per page")
     include_lore: bool = Field(False, description="Fetch lore for each token (slower)")
+
+    def effective_page_size(self) -> int:
+        """limit is a backward-compat alias for page_size."""
+        if self.limit is not None and self.page_size == 15:
+            return min(self.limit, 200)
+        return self.page_size
 
 
 # --- Market data (DexScreener) ---
@@ -667,6 +678,12 @@ class DiscoveryDiagnostics(BaseModel):
     total_after_dedup: int = 0
     total_after_filters: int = 0
     enriched: int = 0
+    # D3: per-stage observability
+    light_scored: int = 0
+    deep_analyzed: int = 0
+    deep_cache_hits: int = 0
+    deep_cache_misses: int = 0
+    deep_analysis_duration_ms: int = 0
     reached_qualification: int = 0
     reached_ranking: int = 0
     excluded: int = 0
@@ -681,6 +698,11 @@ class ScanResponse(BaseModel):
     excluded_tokens: list[RankedToken] = Field(default_factory=list)
     limitations: list[str]
     discovery: DiscoveryDiagnostics | None = None
+    # D3: pagination metadata — display only, never affects discovery/analysis.
+    page: int = 1
+    page_size: int = 15
+    total_ranked: int = 0
+    total_pages: int = 1
 
 
 class WatchlistResponse(BaseModel):

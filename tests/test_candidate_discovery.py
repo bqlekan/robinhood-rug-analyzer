@@ -98,7 +98,7 @@ class TestMultiSourceDiscovery:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 5
         assert diag.sources[0].source == "blockscout_tokens"
         assert diag.sources[0].accepted == 5
@@ -109,7 +109,7 @@ class TestMultiSourceDiscovery:
         monkeypatch.setattr(settings, "discovery_blockscout_tokens_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 3
         assert diag.sources[0].source == "blockscout_fiat_value"
 
@@ -119,7 +119,7 @@ class TestMultiSourceDiscovery:
         monkeypatch.setattr(settings, "discovery_blockscout_tokens_enabled", False)
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 2
         assert diag.sources[0].source == "blockscout_holders"
 
@@ -130,7 +130,7 @@ class TestMultiSourceDiscovery:
         _stub_providers(monkeypatch, tokens=tokens, contracts=fiat_tokens,
                         holders_tokens=holder_tokens)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
-        cands, diag = _run(discover_candidates(limit=50))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 7
         assert diag.total_raw == 7
 
@@ -141,7 +141,7 @@ class TestMultiSourceDiscovery:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 0
         assert diag.total_raw == 0
 
@@ -158,7 +158,7 @@ class TestDeduplication:
         _stub_providers(monkeypatch, tokens=tokens, contracts=fiat_tokens)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 1
         # First provider wins (blockscout_tokens runs before blockscout_fiat_value)
         assert cands[0].name == "FromTokens"
@@ -175,7 +175,7 @@ class TestDeduplication:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 1
 
 
@@ -193,7 +193,7 @@ class TestFiltering:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 1
         assert cands[0].symbol == "NEW"
         assert diag.sources[0].rejected_established == 1
@@ -201,7 +201,7 @@ class TestFiltering:
     def test_invalid_address_rejected(self):
         sd = SourceDiagnostic(source="test")
         raw = [RawCandidate(address="not_an_address", source="test")]
-        accepted = _filter_candidates(raw, set(), sd, 0, 0)
+        accepted = _filter_candidates(raw, {}, sd, 0, 0)
         assert len(accepted) == 0
         assert sd.rejected_invalid_address == 1
 
@@ -212,17 +212,18 @@ class TestFiltering:
             RawCandidate(address=f"0x{'b' * 40}", source="test", holder_count=5),
             RawCandidate(address=f"0x{'c' * 40}", source="test", holder_count=None),
         ]
-        accepted = _filter_candidates(raw, set(), sd, 0, 0)
+        accepted = _filter_candidates(raw, {}, sd, 0, 0)
         assert len(accepted) == 2
         assert sd.rejected_zero_holders == 1
 
-    def test_limit_caps_output(self, monkeypatch):
+    def test_pool_caps_output(self, monkeypatch):
         tokens = [_blockscout_token(f"0x{'a' * 38}{i:02x}") for i in range(20)]
         _stub_providers(monkeypatch, tokens=tokens)
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, _ = _run(discover_candidates(limit=5))
+        monkeypatch.setattr(settings, "scan_light_pool", 5)
+        cands, _ = _run(discover_candidates())
         assert len(cands) <= 5
 
 
@@ -245,7 +246,7 @@ class TestEnrichment:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 1
         assert cands[0].pair is not None
         assert diag.enriched == 1
@@ -266,7 +267,7 @@ class TestEnrichment:
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
         monkeypatch.setattr(settings, "scan_min_candidate_liquidity_usd", 500.0)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 1
         assert cands[0].pair is not None
 
@@ -287,7 +288,7 @@ class TestEnrichment:
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
         monkeypatch.setattr(settings, "scan_max_launch_age_days", 3.0)
-        cands, diag = _run(discover_candidates(limit=10))
+        cands, diag = _run(discover_candidates())
         assert len(cands) == 1
         assert cands[0].pair is not None
 
@@ -356,7 +357,7 @@ class TestDiagnostics:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        _, diag = _run(discover_candidates(limit=10))
+        _, diag = _run(discover_candidates())
         assert isinstance(diag, DiscoveryDiagnostics)
         assert len(diag.sources) >= 1
         assert diag.total_raw >= 1
@@ -371,7 +372,7 @@ class TestDiagnostics:
         monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
         monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
         monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
-        _, diag = _run(discover_candidates(limit=10))
+        _, diag = _run(discover_candidates())
         src = diag.sources[0]
         assert src.raw == 2
         assert src.accepted == 1
@@ -379,7 +380,7 @@ class TestDiagnostics:
 
     def test_empty_providers_return_zero_diagnostics(self, monkeypatch):
         _stub_providers(monkeypatch)
-        _, diag = _run(discover_candidates(limit=10))
+        _, diag = _run(discover_candidates())
         assert diag.total_raw == 0
         assert diag.enriched == 0
 
@@ -391,11 +392,11 @@ class TestDiagnostics:
 class TestEndToEnd:
     def test_scan_returns_discovery_diagnostics(self, monkeypatch):
         """scan_and_rank should include discovery diagnostics in ScanResponse."""
-        async def fake_discover(limit):
+        async def fake_discover():
             return [], DiscoveryDiagnostics()
 
         monkeypatch.setattr(candidate_discovery, "discover_candidates", fake_discover)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         assert resp.status == "no_tokens"
         assert resp.discovery is not None
 
@@ -403,7 +404,7 @@ class TestEndToEnd:
         """scan_and_rank with discovered candidates reaches analysis."""
         addr = f"0x{'ab' * 20}"
 
-        async def fake_discover(limit):
+        async def fake_discover():
             cands = [DiscoveredCandidate(address_hash=addr, name="Test", symbol="TST", source="test")]
             return cands, DiscoveryDiagnostics(total_raw=1, enriched=1)
 
@@ -424,7 +425,7 @@ class TestEndToEnd:
 
         monkeypatch.setattr(candidate_discovery, "discover_candidates", fake_discover)
         monkeypatch.setattr(rug_analyzer, "analyze_token_contract", fake_analyze)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         assert resp.status == "scan_completed"
         assert len(resp.ranked_tokens) >= 1
         assert resp.discovery is not None
@@ -432,11 +433,11 @@ class TestEndToEnd:
 
     def test_frontend_api_unchanged(self, monkeypatch):
         """ScanResponse still has ranked_tokens and excluded_tokens fields."""
-        async def fake_discover(limit):
+        async def fake_discover():
             return [], DiscoveryDiagnostics()
 
         monkeypatch.setattr(candidate_discovery, "discover_candidates", fake_discover)
-        resp = _run(rug_analyzer.scan_and_rank(5))
+        resp = _run(rug_analyzer.scan_and_rank(page_size=5))
         assert hasattr(resp, "ranked_tokens")
         assert hasattr(resp, "excluded_tokens")
         assert hasattr(resp, "discovery")

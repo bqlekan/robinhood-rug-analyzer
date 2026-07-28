@@ -39,6 +39,7 @@ class RawCandidate:
     symbol: str | None = None
     source: str = ""
     holder_count: int | None = None
+    source_count: int = 1  # D3: bumped on dedup to track multi-provider agreement
 
 
 @dataclass
@@ -50,6 +51,8 @@ class DiscoveredCandidate:
     source: str = ""
     holder_count: int | None = None
     pair: dict | None = None
+    source_count: int = 1    # D3: how many providers found this address
+    lite_score: int = 0      # D3: set by score_opportunity_lite after enrichment
 
 
 # ---------------------------------------------------------------------------
@@ -165,12 +168,15 @@ _PROVIDERS: list[tuple[str, callable, callable]] = [
 
 def _filter_candidates(
     candidates: list[RawCandidate],
-    seen: set[str],
+    seen: dict[str, RawCandidate],
     diag: SourceDiagnostic,
     max_age_ms: float = 0,
     min_liq: float = 0,
 ) -> list[RawCandidate]:
     """Apply shared filter chain, mutating `diag` with rejection counts.
+
+    D3: `seen` is a dict (addr -> first-seen RawCandidate) so duplicates bump
+    `source_count` on the winner instead of being silently discarded.
 
     max_age_ms and min_liq are accepted for API compatibility but unused —
     age/liquidity are now scoring inputs, not discovery gates.
@@ -184,6 +190,8 @@ def _filter_candidates(
         addr_low = c.address.lower()
         if addr_low in seen:
             diag.rejected_duplicate += 1
+            # D3: track multi-provider agreement on the first-seen copy
+            seen[addr_low].source_count += 1
             continue
         if launchpad_registry.is_established_token(c.symbol, c.name):
             diag.rejected_established += 1
@@ -192,7 +200,7 @@ def _filter_candidates(
         if c.holder_count is not None and c.holder_count == 0:
             diag.rejected_zero_holders += 1
             continue
-        seen.add(addr_low)
+        seen[addr_low] = c
         diag.accepted += 1
         accepted.append(c)
     return accepted
@@ -226,6 +234,7 @@ async def _enrich_with_market_data(
             source=c.source,
             holder_count=c.holder_count,
             pair=pair,
+            source_count=c.source_count,
         )
 
     return await asyncio.gather(*[_enrich_one(c) for c in candidates])
@@ -241,13 +250,14 @@ def _pair_age_ms(created_ms: int) -> tuple[int, int]:
 
 
 async def discover_candidates(
-    limit: int,
 ) -> tuple[list[DiscoveredCandidate], DiscoveryDiagnostics]:
     """Run all enabled discovery providers, merge, deduplicate, filter, enrich.
 
-    Returns (candidates, diagnostics). Candidates are capped at ``limit``.
+    D3: no ``limit`` parameter. Discovery finds broadly; the caller
+    (scan_and_rank) lite-scores, selects a deep pool, and paginates.
+    Pool sizes come from config: scan_candidate_pool and scan_light_pool.
     """
-    seen: set[str] = set()
+    seen: dict[str, RawCandidate] = {}
     all_filtered: list[RawCandidate] = []
     source_diags: list[SourceDiagnostic] = []
 
@@ -271,7 +281,7 @@ async def discover_candidates(
         filtered = _filter_candidates(raw, seen, sd, 0, 0)
         return name, filtered, sd
 
-    # Run sequentially to share the `seen` set correctly for cross-source dedup
+    # Run sequentially to share the `seen` dict correctly for cross-source dedup
     for name, fn in enabled:
         _, filtered, sd = await _run_provider(name, fn)
         all_filtered.extend(filtered)
@@ -280,11 +290,10 @@ async def discover_candidates(
     total_raw = sum(sd.raw for sd in source_diags)
     total_after_dedup = len(all_filtered)
 
-    # Enrich with DexScreener market data — all candidates pass through
-    pool_limit = min(limit * 4, settings.scan_candidate_pool_size, len(all_filtered))
-    enriched = await _enrich_with_market_data(all_filtered[:pool_limit])
-
-    final = enriched[:limit]
+    # D3: cap at scan_candidate_pool, then enrich scan_light_pool
+    pool_limit = min(settings.scan_candidate_pool, len(all_filtered))
+    enrich_limit = min(settings.scan_light_pool, pool_limit)
+    enriched = await _enrich_with_market_data(all_filtered[:enrich_limit])
 
     diag = DiscoveryDiagnostics(
         sources=source_diags,
@@ -292,6 +301,5 @@ async def discover_candidates(
         total_after_dedup=total_after_dedup,
         total_after_filters=total_after_dedup,
         enriched=len(enriched),
-        reached_qualification=len(final),
     )
-    return final, diag
+    return enriched, diag
