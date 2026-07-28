@@ -486,6 +486,38 @@ class AlphaTimeline(BaseModel):
     summary: TimelineSummary = Field(default_factory=TimelineSummary)
 
 
+class EnrichmentField(BaseModel):
+    status: str = "not_analysed"  # "known" | "unknown" | "unavailable" | "not_analysed"
+    source: str | None = None
+    confidence: str = "medium"  # "high" | "medium" | "low"
+    reason: str | None = None
+
+
+class EnrichmentReport(BaseModel):
+    pair: EnrichmentField = Field(default_factory=EnrichmentField)
+    price: EnrichmentField = Field(default_factory=EnrichmentField)
+    liquidity: EnrichmentField = Field(default_factory=EnrichmentField)
+    fdv: EnrichmentField = Field(default_factory=EnrichmentField)
+    market_cap: EnrichmentField = Field(default_factory=EnrichmentField)
+    volume_h24: EnrichmentField = Field(default_factory=EnrichmentField)
+    holders: EnrichmentField = Field(default_factory=EnrichmentField)
+    developer: EnrichmentField = Field(default_factory=EnrichmentField)
+    verification: EnrichmentField = Field(default_factory=EnrichmentField)
+    launchpad: EnrichmentField = Field(default_factory=EnrichmentField)
+    smart_wallets: EnrichmentField = Field(default_factory=EnrichmentField)
+    data_confidence: int = 0
+
+    def compute_data_confidence(self) -> int:
+        fields = [
+            self.pair, self.price, self.liquidity, self.fdv, self.market_cap,
+            self.volume_h24, self.holders, self.developer, self.verification,
+            self.launchpad, self.smart_wallets,
+        ]
+        known = sum(1 for f in fields if f.status == "known")
+        self.data_confidence = int(known / len(fields) * 100)
+        return self.data_confidence
+
+
 class TokenAnalysisResponse(BaseModel):
     contract_address: str
     chain: str
@@ -515,6 +547,7 @@ class TokenAnalysisResponse(BaseModel):
     alpha_level: str | None = None
     alpha_signals: list["OpportunitySignal"] = Field(default_factory=list)
     analysis: RugAnalysis
+    enrichment: EnrichmentReport | None = None
 
 
 class QualificationResult(BaseModel):
@@ -569,10 +602,74 @@ class RankedToken(BaseModel):
     excluded_from_ranking: bool = False
     rejection_reasons: list[str] = Field(default_factory=list)
     eligibility_evidence: list[str] = Field(default_factory=list)
+    eligibility_warnings: list[str] = Field(default_factory=list)
+    # Independent dimension scores (0-100, None = not computed).
+    security_score: int | None = None
+    liquidity_score: int | None = None
+    dev_reputation_score: int | None = None
+    dev_network_score: int | None = None
+    smart_wallet_score: int | None = None
+    holder_quality_score: int | None = None
+    momentum_score: int | None = None
+    composite_score: int | None = None
     # Liquidity lock summary (from full analysis).
     lock_status: str | None = None
     lock_percentage: float | None = None
     lock_provider: str | None = None
+    # Enrichment metadata.
+    data_confidence: int | None = None
+    enrichment_status: str | None = None  # "complete" | "partial" | "minimal"
+
+
+# --- Launchpad plugin definitions ---
+
+
+class LaunchpadDefinition(BaseModel):
+    """Configuration for a single launchpad discovery source.
+
+    Drives the plugin-based launchpad discovery engine — each enabled entry
+    is dispatched to the strategy matching ``discovery_mode``. New launchpads
+    are added by configuration only; the engine has zero launchpad-specific
+    branches.
+    """
+
+    name: str
+    enabled: bool = False
+    discovery_mode: str  # registered strategy key: "event" | "factory_scan" | "contract_creation_scan"
+    factory_address: str | None = None
+    deployer_address: str | None = None
+    topic0: str | None = None  # 32-byte hex hash of the event signature
+    event_signature: str | None = None  # human-readable, e.g. "TokenLaunched(address,...)"
+    token_index: int = 0  # token address in topics[1 + token_index]
+    start_block: int = 0
+    confidence: str = "low"  # "high" | "medium" | "low"
+
+
+class SourceDiagnostic(BaseModel):
+    """Per-provider diagnostics for the discovery pipeline."""
+    source: str
+    raw: int = 0
+    accepted: int = 0
+    rejected_established: int = 0
+    rejected_invalid_address: int = 0
+    rejected_duplicate: int = 0
+    rejected_zero_holders: int = 0
+    rejected_age: int = 0
+    rejected_liquidity: int = 0
+    rejected_other: int = 0
+    error: str | None = None
+
+
+class DiscoveryDiagnostics(BaseModel):
+    """Full pipeline diagnostics attached to ScanResponse."""
+    sources: list[SourceDiagnostic] = Field(default_factory=list)
+    total_raw: int = 0
+    total_after_dedup: int = 0
+    total_after_filters: int = 0
+    enriched: int = 0
+    reached_qualification: int = 0
+    reached_ranking: int = 0
+    excluded: int = 0
 
 
 class ScanResponse(BaseModel):
@@ -583,6 +680,7 @@ class ScanResponse(BaseModel):
     ranked_tokens: list[RankedToken]
     excluded_tokens: list[RankedToken] = Field(default_factory=list)
     limitations: list[str]
+    discovery: DiscoveryDiagnostics | None = None
 
 
 class WatchlistResponse(BaseModel):

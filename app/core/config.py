@@ -75,23 +75,96 @@ class Settings(BaseSettings):
     # Max concurrent deep analyses in flight during a scan (bounds fan-out).
     scan_max_deep_analyses: int = 5
 
-    # --- Opportunity discovery (D1) ---
+    # --- Opportunity discovery (D2: multi-source candidate discovery) ---
     # The ranked scanner is an OPPORTUNITY scanner: it should surface newly-launched
-    # tokens, not the chain's oldest established assets (which Blockscout /tokens lists
-    # first, by market cap). Before ranking, candidates are enriched with their
-    # DexScreener launch time + liquidity (a free source the deep pipeline already reads,
-    # so the enrichment fetch is cache-reused by analysis — no extra scan latency) and
-    # then filtered/sorted so fresh, tradeable launches win the candidate slots.
+    # tokens from multiple on-chain sources, not rely on a single endpoint.
     scan_prefer_recent_launches: bool = True
-    # How many list_tokens candidates to enrich + rank for freshness before analysis.
-    # Bounds the enrichment fan-out; >= scan_max_tokens so real launches aren't crowded out.
     scan_candidate_pool_size: int = 60
-    # Launches older than this are dropped from the opportunity pool. A token whose age
-    # cannot be determined (no market pair) is KEPT — graceful fallback to prior behaviour.
     scan_max_launch_age_days: float = 3.0
-    # Candidates with market liquidity below this are treated as dead/abandoned and
-    # skipped. 0 disables the floor. Tokens with unknown liquidity are kept (fallback).
     scan_min_candidate_liquidity_usd: float = 500.0
+
+    # --- Multi-source candidate discovery providers ---
+    # Each provider can be independently toggled. Candidates from all enabled
+    # providers are merged and deduplicated before qualification.
+    discovery_blockscout_tokens_enabled: bool = True
+    discovery_blockscout_tokens_pages: int = 2
+    discovery_blockscout_contracts_enabled: bool = True
+    discovery_blockscout_contracts_pages: int = 2
+    discovery_launchpad_enabled: bool = True
+    discovery_dexscreener_enabled: bool = True
+    # Config-driven launchpad factory addresses. Each entry maps a human label to a
+    # factory contract address whose deployed tokens should be discovered. Populate
+    # from an authoritative source; empty by default (same safety stance as the
+    # launchpad_registry — no unverified addresses).
+    discovery_launchpad_factories: dict[str, str] = {}
+    # Config-driven DEX factory addresses for PairCreated event scanning. Maps a
+    # human label to a factory contract. The Uniswap v3 factory (from honeypot
+    # config) is always included when discovery_launchpad_enabled is True.
+    discovery_dex_factories: dict[str, str] = {}
+    # Max candidates each provider contributes to the pool before dedup.
+    discovery_per_provider_limit: int = 50
+
+    # --- Plugin-based launchpad discovery ---
+    # Each entry drives the plugin discovery engine (`launchpad_discovery.py`).
+    # Adding a launchpad is a config-only change: no engine code touched. The
+    # engine dispatches by `discovery_mode` to a registered strategy plugin.
+    # Strategies: "event" (eth_getLogs), "factory_scan" (Blockscout tx history
+    # for a factory), "contract_creation_scan" (Blockscout tx history for a
+    # deployer address).
+    launchpad_definitions: list[dict] = [
+        # PONS — event-driven bonding-curve launchpad (current factory).
+        {
+            "name": "PONS",
+            "enabled": True,
+            "discovery_mode": "event",
+            "factory_address": "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB",
+            "topic0": "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a",
+            "event_signature": "TokenLaunched(address,address,address,address,address,uint256,uint256,uint256,uint256,uint256)",
+            "token_index": 0,
+            "start_block": 8991118,
+            "confidence": "high",
+        },
+        # PONS — legacy factory (kept for historical coverage).
+        {
+            "name": "PONS_legacy",
+            "enabled": True,
+            "discovery_mode": "event",
+            "factory_address": "0x0c37a24F5D23A486FA692d1500881d698B1F77a4",
+            "topic0": "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a",
+            "event_signature": "TokenLaunched(address,address,address,address,address,uint256,uint256,uint256,uint256,uint256)",
+            "token_index": 0,
+            "start_block": 8600612,
+            "confidence": "high",
+        },
+        # Bags — event-driven launchpad. Disabled until topic0 verified from an
+        # on-chain log (offline keccak256 computation not available in-env).
+        {
+            "name": "Bags",
+            "enabled": False,
+            "discovery_mode": "event",
+            "factory_address": "0xe8Cc4431adF8b5A847C113EF0c6af9043219Cb37",
+            "topic0": None,
+            "event_signature": "TokenCreated(address,address,address,address,address,bytes32,string,string,string)",
+            "token_index": 0,
+            "start_block": 7887312,
+            "confidence": "high",
+        },
+        # NOXA — deploys via a factory EOA/contract; scan its outbound tx history.
+        {
+            "name": "NOXA",
+            "enabled": True,
+            "discovery_mode": "contract_creation_scan",
+            "factory_address": "0xD9eC2db5f3D1b236843925949fe5bd8a3836FCcB",
+            "deployer_address": "0xD9eC2db5f3D1b236843925949fe5bd8a3836FCcB",
+            "start_block": 0,
+            "confidence": "medium",
+        },
+    ]
+    # eth_getLogs chunking — public RPCs time out on wide block ranges.
+    launchpad_event_scan_chunk_size: int = 2000
+    launchpad_event_scan_max_chunks: int = 20
+    # Directory for resumable-scan checkpoints (JSON file).
+    launchpad_checkpoint_dir: str = "data/checkpoints"
 
     # --- Qualification Engine (pre-ranking classifier) ---
     # Hard-exclusion gates: only genuinely non-investable tokens are excluded.
@@ -123,6 +196,15 @@ class Settings(BaseSettings):
     opportunity_exclude_alpha_floor: int = 30
     dashboard_sort: str = "alpha"
     scanner_sort: str = "alpha"
+    ranking_weights: dict[str, int] = {
+        "opportunity": 25,
+        "security": 20,
+        "liquidity": 15,
+        "dev_reputation": 10,
+        "dev_network": 10,
+        "smart_wallet": 10,
+        "confidence": 10,
+    }
 
     # --- Honeypot / sell-tax simulation (M10) ---
     # Inert by default: with no router mapped for a token's DEX, no sim calls fire and

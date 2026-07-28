@@ -60,29 +60,48 @@ class TestExcluded:
         assert q.qualification_level == "excluded"
         assert any("honeypot" in reason.lower() for reason in q.rejection_reasons)
 
-    def test_no_pair_excluded(self):
-        r = _base_result(market_data=TokenMarketData(
-            pair_address=None, price_usd=None, liquidity=None,
-        ))
+    def test_no_pair_classified_speculative_or_high_risk(self):
+        r = _base_result(
+            analysis=RugAnalysis(
+                risk_score=85, risk_level="critical", signals=[],
+                data_sources=[], limitations=[], confidence=50,
+            ),
+            market_data=TokenMarketData(
+                pair_address=None, price_usd=None, liquidity=None,
+            ),
+        )
         q = evaluate(r)
-        assert q.qualification_level == "excluded"
-        assert any("pair" in reason.lower() for reason in q.rejection_reasons)
+        assert q.qualification_level != "excluded"
+        assert q.qualification_level in ("speculative", "high_risk")
 
-    def test_zero_liquidity_excluded(self):
+    def test_zero_liquidity_not_excluded(self):
         r = _base_result(market_data=TokenMarketData(
             pair_address="0x" + "b" * 40,
             price_usd="1.0",
             liquidity=LiquiditySnapshot(usd=0.0),
         ))
         q = evaluate(r)
-        assert q.qualification_level == "excluded"
-        assert any("zero liquidity" in reason.lower() for reason in q.rejection_reasons)
+        assert q.qualification_level != "excluded"
+        assert any("zero" in w.lower() and "liquidity" in w.lower() for w in q.warnings)
 
-    def test_no_market_data_excluded(self):
-        r = _base_result(market_data=None)
+    def test_no_market_data_with_holders_not_excluded(self):
+        """No DexScreener pair but real holders → speculative, not excluded."""
+        r = _base_result(
+            market_data=None,
+            holders=HolderDistribution(holder_count=100, top10_percentage=40.0),
+        )
+        q = evaluate(r)
+        assert q.qualification_level != "excluded"
+
+    def test_no_market_data_no_holders_excluded(self):
+        """No market data AND no holders → dead contract."""
+        r = _base_result(
+            market_data=None,
+            holders=HolderDistribution(holder_count=0),
+        )
         q = evaluate(r)
         assert q.qualification_level == "excluded"
-        assert any("dead" in reason.lower() or "market data" in reason.lower() for reason in q.rejection_reasons)
+        assert any("dead" in reason.lower() for reason in q.rejection_reasons)
 
     def test_proven_rug_excluded(self):
         r = _base_result(analysis=RugAnalysis(
@@ -102,11 +121,14 @@ class TestExcluded:
     def test_multiple_exclusion_reasons(self):
         r = _base_result(
             market_data=None,
+            holders=HolderDistribution(holder_count=0),
             honeypot=HoneypotResult(status="honeypot"),
         )
         q = evaluate(r)
         assert q.qualification_level == "excluded"
         assert len(q.rejection_reasons) >= 2
+        assert any("honeypot" in r.lower() for r in q.rejection_reasons)
+        assert any("dead" in r.lower() for r in q.rejection_reasons)
 
 
 # ── Not excluded (the key behavioral change) ────────────────────
@@ -143,6 +165,14 @@ class TestNotExcluded:
         ))
         q = evaluate(r)
         assert q.qualification_level != "excluded"
+
+    def test_no_pair_low_risk_is_speculative(self):
+        """Low-risk token with no pair is speculative, not avoid."""
+        r = _base_result(market_data=TokenMarketData(
+            pair_address=None, price_usd=None, liquidity=None,
+        ))
+        q = evaluate(r)
+        assert q.qualification_level == "speculative"
 
     def test_old_token_not_excluded(self):
         """Token >3d old was excluded by old engine (max_age=3). Now ranked."""
@@ -245,6 +275,22 @@ class TestClassification:
         q = evaluate(r)
         assert q.qualification_level == "high_risk"
 
+    def test_unknown_liquidity_classified_high_risk(self):
+        """Token with no liquidity data but risk>80 → high_risk (avoid tier removed)."""
+        r = _base_result(
+            analysis=RugAnalysis(
+                risk_score=85, risk_level="critical", signals=[],
+                data_sources=["DexScreener"], limitations=[], confidence=50,
+            ),
+            market_data=TokenMarketData(
+                pair_address=None,
+                price_usd=None,
+                liquidity=None,
+            ),
+        )
+        q = evaluate(r)
+        assert q.qualification_level == "high_risk"
+
 
 # ── Confidence score ─────────────────────────────────────────────
 
@@ -269,7 +315,7 @@ class TestConfidenceScore:
         assert q_verified.confidence_score >= q_unverified.confidence_score
 
     def test_no_market_data_low_confidence(self):
-        r = _base_result(market_data=None)
+        r = _base_result(market_data=None, holders=HolderDistribution(holder_count=0))
         q = evaluate(r)
         assert q.confidence_score < 40
 
@@ -344,6 +390,32 @@ class TestEvidenceAndWarnings:
         ))
         q = evaluate(r)
         assert any("fdv" in w.lower() for w in q.warnings)
+
+    def test_pros_cons_populated(self):
+        """A typical token should have non-empty evidence and warnings."""
+        q = evaluate(_base_result())
+        assert len(q.evidence) > 0
+        assert len(q.warnings) > 0
+
+    def test_zero_liq_in_warnings(self):
+        r = _base_result(market_data=TokenMarketData(
+            pair_address="0x" + "b" * 40,
+            price_usd="1.0",
+            liquidity=LiquiditySnapshot(usd=0.0),
+        ))
+        q = evaluate(r)
+        assert any("zero" in w.lower() and "liquidity" in w.lower() for w in q.warnings)
+
+    def test_verified_contract_in_evidence(self):
+        r = _base_result(contract_intel=ContractIntel(verified=True))
+        q = evaluate(r)
+        assert any("verified" in ev.lower() for ev in q.evidence)
+
+    def test_no_market_data_warnings(self):
+        """No market data with holders → not excluded, but warnings present."""
+        r = _base_result(market_data=None)
+        q = evaluate(r)
+        assert any("no market data" in w.lower() for w in q.warnings)
 
 
 # ── Backward compatibility ───────────────────────────────────────

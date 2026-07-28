@@ -18,6 +18,7 @@ from app.models.token import (
     LiquiditySnapshot,
 )
 from app.services import rug_analyzer
+from app.services import candidate_discovery
 from app.services.scoring import score_token_light
 
 
@@ -71,11 +72,23 @@ def _stub_deep(monkeypatch):
 
 
 def _stub_discovery(monkeypatch, tokens):
-    """Stub _discover_recent_candidates to return the given tokens directly."""
-    async def fake_discover(limit):
-        return tokens[:limit]
+    """Stub candidate_discovery.discover_candidates to return the given tokens directly."""
+    from app.models.token import DiscoveryDiagnostics
 
-    monkeypatch.setattr(rug_analyzer, "_discover_recent_candidates", fake_discover)
+    async def fake_discover(limit):
+        cands = [
+            candidate_discovery.DiscoveredCandidate(
+                address_hash=t["address_hash"],
+                name=t.get("name"),
+                symbol=t.get("symbol"),
+                holder_count=t.get("holders_count"),
+                source="test",
+            )
+            for t in tokens[:limit]
+        ]
+        return cands, DiscoveryDiagnostics()
+
+    monkeypatch.setattr(candidate_discovery, "discover_candidates", fake_discover)
 
 
 def _run(coro):

@@ -249,10 +249,10 @@ opportunity score tier colors). The frontend is an **Opportunity Intelligence da
 - Detects mint/pause/blacklist/fee-mutation powers from the verified ABI; a confirmed renounce (owner == zero) silences the retained-power signals.
 - Failure modes: unverified/no ABI -> `analyzed=False` (never a false "no powers"); unknown ownership keeps powers flagged; RPC errors -> `None`, never raises.
 
-**`app/services/launchpad_registry.py`** — on-chain-marker registry (pure).
-- Public: `detect_launchpad(creator, contract_name, tags)`, `match_creation_evidence(factory_to, log_topics)`, `has_enabled_launchpads()`, `is_established_token(symbol, name)`, `locker_label(address)`, `is_burn_address(address)`, `locker_unlock_spec(address)` (M13: unlock-read spec for a verified locker, or None), `normalize(...)`.
-- Data: `LAUNCHPADS` and `LP_LOCKERS` are **empty by design in production**; `BURN_ADDRESSES` holds `0x0` and `0x..dead`.
-- Extension: add verified entries (with `source`, `verified_date`, `enabled: True`); add established symbols / name hints.
+**`app/services/launchpad_registry.py`** — on-chain-marker registry (pure) + launchpad definition loader.
+- Public: `detect_launchpad(creator, contract_name, tags)`, `match_creation_evidence(factory_to, log_topics)`, `has_enabled_launchpads()`, `is_established_token(symbol, name)`, `locker_label(address)`, `is_burn_address(address)`, `locker_unlock_spec(address)` (M13: unlock-read spec for a verified locker, or None), `normalize(...)`, `get_launchpad_definitions()` (returns all `LaunchpadDefinition` entries from config, enabled + disabled).
+- Data: `LAUNCHPADS` and `LP_LOCKERS` are **empty by design in production**; `BURN_ADDRESSES` holds `0x0` and `0x..dead`; `launchpad_definitions` is populated with verified factories.
+- Extension: add verified entries (with `source`, `verified_date`, `enabled: True`); add established symbols / name hints; add new launchpad definitions to `settings.launchpad_definitions`.
 - Failure modes: no crashes; empty registry deliberately degrades to "Unknown" rather than a false "locked"/"safe" claim.
 
 **`app/services/analyzers.py`** — pure per-dimension analysis helpers.
@@ -325,7 +325,7 @@ opportunity score tier colors). The frontend is an **Opportunity Intelligence da
 ### 3.3 Data clients and infrastructure
 
 **`app/services/blockscout_client.py`** — Blockscout REST v2 for Robinhood Chain.
-- Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_token_holders_paged(address, pages)`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_token_holdings` (M16: a wallet's current token holdings, for cross-token survival), `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`.
+- Public: `get_token_info`, `get_token_counters`, `get_token_holders`, `get_token_holders_paged(address, pages)`, `get_address_info` (cached), `get_address_token_transfers`, `get_address_token_holdings` (M16: a wallet's current token holdings, for cross-token survival), `get_address_transactions`, `get_smart_contract` (cached), `get_transaction_timestamp` (cached), `get_transaction` (cached), `get_transaction_logs` (cached), `get_token_transfers(address, pages)`, `list_tokens(token_type, limit)`, `list_new_tokens(pages)` (D2: newest ERC-20 tokens sorted by holders asc), `list_new_smart_contracts(pages)` (D2: recently verified contracts).
 - Dependencies: `http.get_client`, `cache`. Config: `blockscout_base_url`, cache settings.
 - Failure modes: central `_get` returns `None` on any HTTP/JSON error. Immutable reads (source, creation facts, mined tx) use the 300s static cache; `token_info`/`token_counters` use a short (~15s `market_cache_ttl_seconds`) cache and `get_address_transactions` uses the static cache (earliest-funder is immutable) to collapse duplicate reads across scan bursts; **holders/transfers stay always-live** (never cached).
 
@@ -333,9 +333,24 @@ opportunity score tier colors). The frontend is an **Opportunity Intelligence da
 - Public: `eth_call(to, data, block="latest", state_override=None)` (not cached), `get_transaction_by_hash` (cached), `get_transaction_receipt` (cached).
 - Failure modes: `_rpc` returns `None` on transport error, bad JSON, or a JSON-RPC `error` object.
 
-**`app/services/dexscreener_client.py`** — DexScreener public pairs.
-- Public: `fetch_token_pairs(address)` (filtered to `dexscreener_chain`), `choose_best_pair(pairs)` (highest USD liquidity).
+**`app/services/dexscreener_client.py`** — DexScreener public pairs (market-data enrichment, NOT primary discovery).
+- Public: `fetch_token_pairs(address)` (filtered to `dexscreener_chain`), `choose_best_pair(pairs)` (highest USD liquidity), `fetch_latest_pairs()` (text search, supplementary discovery source only — capped at ~30 results by API).
 - Config: `dexscreener_chain`, `market_cache_ttl_seconds`. Failure modes: returns `[]` on error (errors never cached, so a transient failure is retried); successful pair reads use the short (~15s) market cache to collapse duplicate reads across scan bursts.
+
+**`app/services/candidate_discovery.py`** — Multi-source candidate discovery pipeline (D2).
+- Public: `discover_candidates(limit)` → `(list[DiscoveredCandidate], DiscoveryDiagnostics)`.
+- Providers: `blockscout_tokens` (new ERC-20 tokens), `blockscout_contracts` (recently verified contracts), `launchpad_factories` (plugin-based launchpad engine — see below), `dexscreener_search` (supplementary text search). Each independently toggleable via config.
+- Config: `discovery_blockscout_tokens_enabled`, `discovery_blockscout_contracts_enabled`, `discovery_launchpad_enabled`, `discovery_dexscreener_enabled`, `discovery_per_provider_limit`, `launchpad_definitions`, `launchpad_event_scan_chunk_size`, `launchpad_event_scan_max_chunks`.
+
+**`app/services/launchpad_discovery.py`** — Plugin-based launchpad discovery engine (D2v2).
+- Public: `discover_all(definitions: list[LaunchpadDefinition]) -> list[dict]`.
+- Strategies: `EventLogDiscovery` (eth_getLogs with topic0), `FactoryTransactionDiscovery` (Blockscout tx history for a factory), `ContractCreationDiscovery` (Blockscout tx history for a deployer). Registered via `register_strategy(strategy)`.
+- Engine: iterates enabled `LaunchpadDefinition` entries and dispatches by `discovery_mode` to the matching strategy. Zero launchpad-specific branches — adding a launchpad is a config-only change; adding a discovery mode is one new strategy class + `register_strategy(...)`.
+- Config: `launchpad_definitions` (list of typed `LaunchpadDefinition` dicts with name, enabled, discovery_mode, factory_address, deployer_address, topic0, event_signature, token_index, start_block, confidence).
+
+**`app/services/rpc_checkpoint.py`** — Persistent block-number checkpoints for resumable scans.
+- Public: `load_checkpoint(key) -> int | None`, `save_checkpoint(key, block) -> None`.
+- Backed by a JSON file under `launchpad_checkpoint_dir`. Reusable by any feature needing resumable block iteration (wallet monitoring, whale alerts, liquidity events).
 
 **`app/services/lore_client.py`** — public web lore + optional LLM summary.
 - Public: `build_lore(name, symbol, market_socials=None, websites=None) -> TokenLore`.
@@ -699,6 +714,7 @@ behavior is tuned without touching logic.
 | **Networking** | Shared HTTP pool + timeouts | `http_timeout=12.0`, `http_max_connections=20` |
 | **HTTP cache** | Near-static read caching | `http_cache_enabled=True`, `http_cache_ttl_seconds=300`, `http_cache_max_size=512`, `market_cache_ttl_seconds=15` (short-TTL market reads) |
 | **Scan tiering** | Cheap pre-screen before deep analysis | `scan_max_tokens=15`, `scan_tiering_enabled=True`, `scan_light_promote_threshold=25`, `scan_established_holder_floor=500`, `scan_max_deep_analyses=5` |
+| **Candidate discovery (D2)** | Multi-source token discovery | `discovery_blockscout_tokens_enabled=True`, `discovery_blockscout_contracts_enabled=True`, `discovery_launchpad_enabled=True`, `discovery_dexscreener_enabled=True`, `discovery_launchpad_factories={}`, `discovery_dex_factories={}`, `discovery_per_provider_limit=50`, `launchpad_definitions` (plugin engine: PONS, PONS_legacy, NOXA enabled; Bags disabled pending topic0 verification), `launchpad_event_scan_chunk_size=2000`, `launchpad_event_scan_max_chunks=20`, `launchpad_checkpoint_dir="data/checkpoints"` |
 | **Honeypot sim** | Sell-tax/honeypot detection | `honeypot_sim_enabled=True`, `dex_routers`, `honeypot_buy_wei=1e16`, `honeypot_high_tax_pct=30`, prober artifact refs |
 | **Route discovery** | v3 pool/route selection | `honeypot_quote_assets` (WETH, USDG), `honeypot_fee_tiers`, `honeypot_min_quote_reserve` (per-asset floors) |
 | **Wallet intel** | Insider/smart-wallet tuning | `insider_early_buyer_count=15`, `smart_wallet_min_proxy_score=70`, `transfer_scan_pages=2` |
@@ -761,7 +777,7 @@ router is mapped, and the launchpad registries are empty by design.
 ### 9.2 `scan_and_rank` and scan tiering
 
 1. `limit = min(limit, scan_max_tokens)`.
-2. Discover candidates from DexScreener newest-pairs, filtered by launch age + liquidity floor, deduplicated, established tokens skipped.
+2. **Multi-source candidate discovery (D2)** — `candidate_discovery.discover_candidates(limit)` runs all enabled providers concurrently (Blockscout new tokens, Blockscout new contracts, launchpad factory transactions, DexScreener search as supplementary), merges into a single pool, deduplicates by lowercased address, filters established tokens, then enriches each candidate with DexScreener market data and applies age/liquidity gates. Returns `(candidates, DiscoveryDiagnostics)`.
 3. A `Semaphore(scan_max_deep_analyses)` bounds concurrent deep analyses.
 4. Per token: if tiering is off → always deep. Else compute holder count and `score_token_light`. A token is **confidently safe** only when holder count is known AND `>= scan_established_holder_floor` AND light score `< scan_light_promote_threshold`. Anything not confidently safe is **promoted** to deep analysis.
 5. Deep analysis runs under the semaphore, wrapped so one bad token is dropped.
@@ -802,7 +818,7 @@ developer network (10), smart wallet activity (10), holder quality (10), age (10
 (e.g. "Liquidity $5,000", "Active trading", "Low rug risk",
 "Strong developer reputation", "Smart wallet accumulation").
 
-**Pipeline position:** Discover → Analyse → **Qualification** → Opportunity Score → Rank.
+**Pipeline position:** Discover (multi-source) → Enrich (DexScreener) → Analyse → **Qualification** → Opportunity Score → Rank.
 
 ### 9.3 Risk scoring model (`score_token`)
 
@@ -1119,6 +1135,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | M25 — KOL Intelligence Automation | Done | `kol_scheduler` (`capture_one` timeout+retry/backoff, `run_cycle` bounded-concurrency sweep, duplicate-run lock); `main.py` `_kol_scheduler_loop` (enable-gated). Orchestration only — reuses `kol_watchlist.capture_following` wholesale (fetch→diff→crypto→score→cluster→events unchanged) |
 | M26 — Notification transport layer | Done | `notifications.py` gains three HTTP transports (`WebhookProvider` incl. optional HMAC signature, `TelegramProvider`, `DiscordWebhookProvider`) + shared retry/backoff in `_deliver_one`; all plug into the existing M23-H registry/dispatcher/dedupe. Infra only — no new intelligence; providers know nothing of KOL/scoring/clustering, they just ship a ready-made `Notification` |
 | M27 — Watchlist Alerts & Intelligent Notifications | Done | `models/alerts.py` (10 alert types, rules, per-token overrides) + `alert_engine.py` (event→alert mapping, severity/cooldown/dedupe/aggregation, human-readable messages); delivers via reused `notifications.deliver`. Wired into `token_monitor.run_cycle` + `kol_watchlist.capture_following`. Connects existing events to rules — no new intelligence/events/scoring |
+| D2 — Multi-source candidate discovery | Done | `candidate_discovery.py` (provider registry: Blockscout tokens/contracts, launchpad plugin engine, DexScreener search as supplementary); `launchpad_discovery.py` (plugin framework: strategy registry + `EventLogDiscovery` / `FactoryTransactionDiscovery` / `ContractCreationDiscovery`); `rpc_client` gains `get_logs` + `get_logs_chunked` (reusable, with retries + checkpoints); `rpc_checkpoint.py` (JSON-file persistent checkpoints); `launchpad_registry` gains `get_launchpad_definitions`; `LaunchpadDefinition` model in `token.py`; `DiscoveryDiagnostics` model attached to `ScanResponse`. DexScreener demoted from primary discovery source to market-data enrichment only |
 
 **Not yet built:** any **second chain** — M22 shipped the abstraction
 (`core/chains.py`), but only Robinhood Chain is registered. All milestones
@@ -1132,7 +1149,7 @@ Documented honestly — none of this is hidden.
 
 ### Current trade-offs (by design)
 - **`smart` wallet list depended on cross-token survival (fixed in M16).** `profile_token_wallets` now runs a bounded `/addresses/{addr}/tokens` survival lookup for near-threshold candidates and folds `surviving_tokens` into the proxy, so the list can populate on real data.
-- **Launchpad creation-evidence path never fires** because `LAUNCHPADS`/`LP_LOCKERS` are empty by design (avoids false "locked"/"safe"). Populating verified entries activates it.
+- **Launchpad creation-evidence path never fires** because `LAUNCHPADS`/`LP_LOCKERS` are empty by design (avoids false "locked"/"safe"). Populating verified entries activates it. However, the plugin-based launchpad *discovery* engine (`launchpad_discovery.py`) is active with PONS and NOXA enabled by default.
 - **Honeypot sim is inert** on any chain without a mapped router; only Robinhood Chain (Uniswap v3) is wired.
 
 ### Known limitations

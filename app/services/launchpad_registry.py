@@ -254,3 +254,56 @@ def locker_unlock_spec(address: str | None) -> dict | None:
             return None
         return {"selector": selector, "word_index": int(e.get("unlock_word_index", 0))}
     return None
+
+
+# --- Config-driven discovery factories (D2) ---
+
+# Uniswap v3 PairCreated / PoolCreated topic0 (keccak of the canonical event sig).
+POOL_CREATED_TOPIC = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
+
+
+def get_discovery_factories() -> dict[str, str]:
+    """Return label -> factory address for all known launchpad + DEX factories.
+
+    Merges three sources (config-driven factories, config-driven DEX factories,
+    and the honeypot v3_factory) into one dict, lowercased.  Empty by default
+    until an operator populates the config — same safety stance as LAUNCHPADS.
+    """
+    from app.core.config import settings
+    from app.core import chains
+
+    out: dict[str, str] = {}
+    for label, addr in settings.discovery_launchpad_factories.items():
+        out[label] = normalize(addr)
+    for label, addr in settings.discovery_dex_factories.items():
+        out[label] = normalize(addr)
+    chain = chains.active()
+    if chain.v3_factory:
+        out.setdefault("Uniswap V3", normalize(chain.v3_factory))
+    return {k: v for k, v in out.items() if v}
+
+
+def match_factory_deployer(creator: str | None) -> str | None:
+    """If the creator address matches a known discovery factory, return its label."""
+    if not creator:
+        return None
+    addr = normalize(creator)
+    for label, factory in get_discovery_factories().items():
+        if factory == addr:
+            return label
+    return None
+
+
+# --- Plugin-based launchpad definitions (D2 v2) ---
+
+def get_launchpad_definitions():
+    """Return all configured ``LaunchpadDefinition`` objects (enabled + disabled).
+
+    The engine (``launchpad_discovery.discover_all``) filters to enabled ones and
+    dispatches by ``discovery_mode``. Callers can also iterate disabled entries for
+    diagnostics / UI display.
+    """
+    from app.core.config import settings
+    from app.models.token import LaunchpadDefinition
+
+    return [LaunchpadDefinition(**d) for d in settings.launchpad_definitions]

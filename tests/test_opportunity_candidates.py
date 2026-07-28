@@ -1,101 +1,115 @@
-"""D1 regression tests: DexScreener-based candidate discovery.
+"""D1 regression tests: candidate discovery filtering.
 
-The scanner discovers recent launches directly from DexScreener newest-pairs,
-filtering by launch age, minimum liquidity, and established-token exclusion.
+Tests age, liquidity, dedup, and established-token filtering via the
+multi-source discovery pipeline (candidate_discovery.discover_candidates).
 """
 
 import asyncio
+import time
 
 from app.core.config import settings
-from app.services import rug_analyzer
-
-NOW_MS = 1_700_000_000_000
-DAY_MS = 86_400_000
+from app.models.token import DiscoveryDiagnostics
+from app.services import blockscout_client, candidate_discovery
+from app.services.candidate_discovery import DiscoveredCandidate, discover_candidates
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def _stub_latest(monkeypatch, pairs):
-    """Stub fetch_latest_pairs to return the given pair list."""
-    async def fake_latest():
-        return pairs
-
-    monkeypatch.setattr(rug_analyzer, "fetch_latest_pairs", fake_latest)
-    monkeypatch.setattr(rug_analyzer, "_pair_age_ms", lambda c: (c, NOW_MS))
+def _blockscout_token(address, name="Token", symbol="TKN", holders=10):
+    return {"address_hash": address, "name": name, "symbol": symbol,
+            "holders_count": holders, "type": "ERC-20"}
 
 
-def _pair(address, name, symbol, created_ms, liq_usd):
+def _dex_pair(address, liq_usd=5000, created_ms=None):
+    if created_ms is None:
+        created_ms = int(time.time() * 1000) - 3600_000
     return {
         "chainId": "robinhood",
         "pairCreatedAt": created_ms,
+        "pairAddress": f"0xpair_{address[-4:]}",
         "liquidity": {"usd": liq_usd},
-        "baseToken": {"address": address, "name": name, "symbol": symbol},
+        "baseToken": {"address": address, "name": "T", "symbol": "T"},
+        "quoteToken": {"symbol": "WETH"},
+        "priceUsd": "1.0",
+        "dexId": "uniswap",
     }
 
 
-def test_recent_launch_ranks_before_old(monkeypatch):
-    _stub_latest(monkeypatch, [
-        _pair("0xold", "Old", "OLD", NOW_MS - 200 * DAY_MS, 10_000),
-        _pair("0xnew", "New", "NEW", NOW_MS - 1 * DAY_MS, 10_000),
-    ])
-    out = _run(rug_analyzer._discover_recent_candidates(limit=1))
-    assert [t["address_hash"] for t in out] == ["0xnew"]
+def _stub_single(monkeypatch, tokens, pair_map=None):
+    """Stub blockscout_tokens as the only enabled provider + DexScreener enrichment."""
+    async def fake_new_tokens(pages=2):
+        return tokens
+
+    async def fake_list_tokens_by(sort="circulating_market_cap", order="desc", pages=2):
+        return []
+
+    async def fake_token_pairs(address):
+        if pair_map and address in pair_map:
+            return [pair_map[address]]
+        return []
+
+    monkeypatch.setattr(blockscout_client, "list_new_tokens", fake_new_tokens)
+    monkeypatch.setattr(blockscout_client, "list_tokens_by", fake_list_tokens_by)
+    monkeypatch.setattr(blockscout_client, "get_address_transactions_paged",
+                        lambda addr, pages=1: asyncio.coroutine(lambda: [])())
+    monkeypatch.setattr(candidate_discovery, "fetch_token_pairs", fake_token_pairs)
+    monkeypatch.setattr(candidate_discovery, "choose_best_pair", lambda ps: ps[0] if ps else None)
+    monkeypatch.setattr(settings, "discovery_blockscout_contracts_enabled", False)
+    monkeypatch.setattr(settings, "discovery_launchpad_enabled", False)
+    monkeypatch.setattr(settings, "discovery_dexscreener_enabled", False)
 
 
-def test_stale_launch_is_dropped(monkeypatch):
+def test_stale_launch_passes_discovery(monkeypatch):
+    """Old tokens now pass discovery — age is a scoring input, not a gate."""
+    now_ms = int(time.time() * 1000)
+    addr_stale = f"0x{'a1' * 20}"
+    addr_fresh = f"0x{'b2' * 20}"
     monkeypatch.setattr(settings, "scan_max_launch_age_days", 3.0)
-    _stub_latest(monkeypatch, [
-        _pair("0xstale", "Stale", "STL", NOW_MS - 90 * DAY_MS, 10_000),
-        _pair("0xfresh", "Fresh", "FRH", NOW_MS - 1 * DAY_MS, 10_000),
-    ])
-    out = _run(rug_analyzer._discover_recent_candidates(limit=5))
-    assert [t["address_hash"] for t in out] == ["0xfresh"]
+    _stub_single(monkeypatch,
+        tokens=[_blockscout_token(addr_stale), _blockscout_token(addr_fresh)],
+        pair_map={
+            addr_stale: _dex_pair(addr_stale, created_ms=now_ms - 90 * 86_400_000),
+            addr_fresh: _dex_pair(addr_fresh, created_ms=now_ms - 1 * 86_400_000),
+        })
+    cands, _ = _run(discover_candidates(limit=5))
+    addrs = [c.address_hash for c in cands]
+    assert addr_fresh in addrs
+    assert addr_stale in addrs
 
 
-def test_dead_token_below_liquidity_floor_is_dropped(monkeypatch):
+def test_low_liquidity_passes_discovery(monkeypatch):
+    """Low-liq tokens now pass discovery — liquidity is a scoring input, not a gate."""
+    addr_dead = f"0x{'c3' * 20}"
+    addr_live = f"0x{'d4' * 20}"
     monkeypatch.setattr(settings, "scan_min_candidate_liquidity_usd", 500.0)
-    _stub_latest(monkeypatch, [
-        _pair("0xdead", "Dead", "DED", NOW_MS - 1 * DAY_MS, 10.0),
-        _pair("0xlive", "Live", "LIV", NOW_MS - 1 * DAY_MS, 5_000.0),
-    ])
-    out = _run(rug_analyzer._discover_recent_candidates(limit=5))
-    assert [t["address_hash"] for t in out] == ["0xlive"]
+    _stub_single(monkeypatch,
+        tokens=[_blockscout_token(addr_dead), _blockscout_token(addr_live)],
+        pair_map={
+            addr_dead: _dex_pair(addr_dead, liq_usd=10.0),
+            addr_live: _dex_pair(addr_live, liq_usd=5000.0),
+        })
+    cands, _ = _run(discover_candidates(limit=5))
+    addrs = [c.address_hash for c in cands]
+    assert addr_live in addrs
+    assert addr_dead in addrs
 
 
-def test_unknown_age_pairs_are_excluded(monkeypatch):
-    _stub_latest(monkeypatch, [
-        {"chainId": "robinhood", "liquidity": {"usd": 5000},
-         "baseToken": {"address": "0xa", "name": "A", "symbol": "A"}},
-    ])
-    monkeypatch.setattr(rug_analyzer, "_pair_age_ms", lambda c: (c, NOW_MS))
-    out = _run(rug_analyzer._discover_recent_candidates(limit=5))
-    assert out == []
-
-
-def test_no_pairs_returns_empty(monkeypatch):
-    _stub_latest(monkeypatch, [])
-    out = _run(rug_analyzer._discover_recent_candidates(limit=5))
-    assert out == []
-
-
-def test_duplicate_tokens_deduplicated(monkeypatch):
-    _stub_latest(monkeypatch, [
-        _pair("0xsame", "Token", "TKN", NOW_MS - 1 * DAY_MS, 5_000),
-        _pair("0xsame", "Token", "TKN", NOW_MS - 2 * DAY_MS, 3_000),
-    ])
-    monkeypatch.setattr(rug_analyzer, "_pair_age_ms", lambda c: (c, NOW_MS))
-    out = _run(rug_analyzer._discover_recent_candidates(limit=5))
-    assert len(out) == 1
-    assert out[0]["address_hash"] == "0xsame"
+def test_no_tokens_returns_empty(monkeypatch):
+    _stub_single(monkeypatch, tokens=[])
+    cands, _ = _run(discover_candidates(limit=5))
+    assert cands == []
 
 
 def test_established_tokens_skipped(monkeypatch):
-    _stub_latest(monkeypatch, [
-        _pair("0xweth", "Wrapped Ether", "WETH", NOW_MS - 1 * DAY_MS, 50_000),
-        _pair("0xnew", "New", "NEW", NOW_MS - 1 * DAY_MS, 5_000),
-    ])
-    monkeypatch.setattr(rug_analyzer, "_pair_age_ms", lambda c: (c, NOW_MS))
-    out = _run(rug_analyzer._discover_recent_candidates(limit=5))
-    assert [t["address_hash"] for t in out] == ["0xnew"]
+    addr_weth = f"0x{'e5' * 20}"
+    addr_new = f"0x{'f6' * 20}"
+    _stub_single(monkeypatch,
+        tokens=[
+            _blockscout_token(addr_weth, name="Wrapped Ether", symbol="WETH"),
+            _blockscout_token(addr_new, name="New Token", symbol="NEW"),
+        ])
+    cands, _ = _run(discover_candidates(limit=5))
+    assert len(cands) == 1
+    assert cands[0].symbol == "NEW"

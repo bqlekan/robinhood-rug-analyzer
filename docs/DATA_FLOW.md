@@ -48,20 +48,76 @@ lore (optional) → honeypot → score → developer reputation → developer ne
 intelligence (parallel sibling fetches: holders, DexScreener, contracts) → smart wallet
 reputations (parallel per smart wallet hit) → alpha timeline (pure, no I/O) → response.
 
-**Scan path** (`POST /scan`): cap the limit → discover recent candidates from
-DexScreener newest-pairs → drop established tokens → per token run a cheap
+**Scan path** (`POST /scan`): cap the limit → **multi-source candidate discovery**
+(D2: Blockscout new tokens + new contracts + **plugin-based launchpad engine**
+(iterates configured `LaunchpadDefinition` entries and dispatches by
+`discovery_mode` to `EventLogDiscovery` / `FactoryTransactionDiscovery` /
+`ContractCreationDiscovery`) + DexScreener search as supplementary, merged,
+deduplicated, established tokens filtered) →
+**enrich** each candidate with DexScreener market data (price, liquidity, volume,
+pair metadata) → apply age + liquidity gates → per token run a cheap
 `score_token_light`; **promote to full analysis** unless the token is confidently
 safe → full analysis → **qualification engine** (`eligibility.evaluate`) classifies
 each token with a `qualification_level` (excellent/good/speculative/high_risk/excluded)
 and `confidence_score` (0–100) → opportunity score for all non-excluded tokens →
 non-excluded tokens enter `ranked_tokens` sorted by alpha desc, confidence desc,
-risk asc; excluded tokens enter `excluded_tokens` with `rejection_reasons` → `ScanResponse`.
+risk asc; excluded tokens enter `excluded_tokens` with `rejection_reasons` →
+`ScanResponse` (now includes `DiscoveryDiagnostics`).
 
-**Pipeline order:** Discover → Analyse → **Qualification** → Opportunity Score → Rank.
+### Launchpad discovery plugin flow
+
+```text
+settings.launchpad_definitions  (data-only config)
+        │
+        ▼
+launchpad_registry.get_launchpad_definitions()  →  list[LaunchpadDefinition]
+        │
+        ▼
+launchpad_discovery.discover_all(defs)          (engine — zero launchpad-specific branches)
+        │
+        │  filter enabled → dispatch by discovery_mode → registered strategy
+        │
+        ├─── "event"                    → EventLogDiscovery
+        │      rpc_client.get_logs_chunked (retries, chunking, checkpoint resume)
+        │      extract token from topics[1 + token_index]
+        │
+        ├─── "factory_scan"             → FactoryTransactionDiscovery
+        │      blockscout_client.get_address_transactions_paged(factory_address)
+        │      extract created_contract per tx
+        │
+        └─── "contract_creation_scan"   → ContractCreationDiscovery
+               blockscout_client.get_address_transactions_paged(deployer_address)
+               extract created_contract per tx
+        │
+        ▼
+list[{"address": ..., "source": "launchpad:{name}"}]
+        │
+        ▼
+candidate_discovery._launchpad_factory_provider  →  list[RawCandidate]
+        │
+        ▼
+normal dedup / filter / enrich pipeline
+```
+
+**Seeded launchpad definitions:**
+
+| Name          | Mode                       | Confidence | Enabled |
+|---------------|----------------------------|------------|---------|
+| PONS          | event                      | high       | Yes     |
+| PONS_legacy   | event                      | high       | Yes     |
+| Bags          | event                      | high       | No (topic0 pending verification) |
+| NOXA          | contract_creation_scan     | medium     | Yes     |
+
+**Adding a new launchpad:** add one `LaunchpadDefinition` entry to `settings.launchpad_definitions` — no engine code changes required.
+
+**Adding a new discovery mode:** implement a strategy class conforming to the `DiscoveryStrategy` protocol (a `mode` class-var + an async `discover(defn)` method) and call `launchpad_discovery.register_strategy(...)`. The engine will dispatch to it automatically for any definition using that mode.
+
+**Pipeline order:** Discover (multi-source) → Enrich (DexScreener) → Analyse → **Qualification** → Opportunity Score → Rank.
 
 **Degradation:** every external read returns `None`/`[]` on failure; a bad token
-in a scan is dropped, not fatal; the honeypot sim returns `"unknown"` rather
-than a false verdict.
+in a scan is dropped, not fatal; if one discovery provider fails the others still
+contribute candidates; the honeypot sim returns `"unknown"` rather than a false
+verdict.
 
 ---
 

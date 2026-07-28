@@ -13,7 +13,6 @@ from app.services.http import get_client
 logger = logging.getLogger(__name__)
 
 DEXSCREENER_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
-DEXSCREENER_SEARCH_URL = "https://api.dexscreener.com/latest/dex/search"
 
 # Short-TTL cache (matches the blockscout market cache): collapses duplicate pair
 # reads across a scan burst / rapid re-analysis without serving stale market data to
@@ -54,41 +53,27 @@ async def fetch_token_pairs(address: str) -> list[dict[str, Any]]:
 
 
 def choose_best_pair(pairs: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Prefer the pair with the highest USD liquidity."""
+    """Pick the best pair by composite rank: liquidity 40%, volume 30%, traders 20%, age 10%."""
     if not pairs:
         return None
 
-    def liquidity_usd(pair: dict[str, Any]) -> float:
-        liquidity = pair.get("liquidity") or {}
-        value = liquidity.get("usd") or 0
+    import time
+
+    now_ms = time.time() * 1000
+
+    def _rank(pair: dict[str, Any]) -> float:
         try:
-            return float(value)
+            liq = float((pair.get("liquidity") or {}).get("usd") or 0)
         except (TypeError, ValueError):
-            return 0.0
+            liq = 0.0
+        try:
+            vol = float((pair.get("volume") or {}).get("h24") or 0)
+        except (TypeError, ValueError):
+            vol = 0.0
+        txns = (pair.get("txns") or {}).get("h24") or {}
+        traders = (txns.get("buys") or 0) + (txns.get("sells") or 0)
+        created = pair.get("pairCreatedAt") or 0
+        age_hours = max(0, (now_ms - created) / 3_600_000) if created else 0
+        return liq * 0.4 + vol * 0.3 + traders * 100 * 0.2 + min(age_hours, 720) * 0.1
 
-    return max(pairs, key=liquidity_usd)
-
-
-async def fetch_latest_pairs() -> list[dict[str, Any]]:
-    """Fetch the newest pairs on the active chain from DexScreener (sorted newest-first)."""
-    chain_id = chains.active().dexscreener_chain
-
-    try:
-        response = await get_client().get(
-            DEXSCREENER_SEARCH_URL,
-            params={"q": chain_id},
-            headers={"Accept": "application/json"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPError as exc:
-        logger.warning("DexScreener search request failed: %s", exc)
-        return []
-    except ValueError as exc:
-        logger.warning("DexScreener search returned invalid JSON: %s", exc)
-        return []
-
-    pairs = payload.get("pairs") or []
-    if not isinstance(pairs, list):
-        return []
-    return [p for p in pairs if (p.get("chainId") or "").lower() == chain_id]
+    return max(pairs, key=_rank)

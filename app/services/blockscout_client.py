@@ -263,3 +263,58 @@ async def list_tokens(token_type: str = "ERC-20", limit: int = 50) -> list[dict[
     if not isinstance(items, list):
         return []
     return items[:limit]
+
+
+async def list_tokens_by(
+    sort: str = "circulating_market_cap",
+    order: str = "desc",
+    pages: int = 2,
+) -> list[dict[str, Any]]:
+    """List ERC-20 tokens on the active chain, sorted by `sort` descending.
+
+    Supported sort values (Blockscout v2): circulating_market_cap,
+    holders_count, fiat_value.  Paginates up to `pages` pages (~50 per page).
+    """
+    items: list[dict[str, Any]] = []
+    params: dict[str, Any] = {"type": "ERC-20", "sort": sort, "order": order}
+    client = get_client()
+    for _ in range(max(1, pages)):
+        payload = await _get(client, "/tokens", params=params)
+        page_items = (payload or {}).get("items") or []
+        if isinstance(page_items, list):
+            items.extend(page_items)
+        next_params = (payload or {}).get("next_page_params")
+        if not next_params:
+            break
+        params = {**next_params, "type": "ERC-20", "sort": sort, "order": order}
+    return items
+
+
+async def list_new_tokens(pages: int = 2) -> list[dict[str, Any]]:
+    """List ERC-20 tokens sorted by circulating market cap descending.
+
+    Paginates up to `pages` pages (~50 per page). Market-cap ordering selects
+    tokens with real trading activity; holders_count asc returned dead spam.
+    """
+    return await list_tokens_by(sort="circulating_market_cap", order="desc", pages=pages)
+
+
+async def list_new_smart_contracts(pages: int = 2) -> list[dict[str, Any]]:
+    """List recently verified smart contracts (newest first, paginated).
+
+    Used by the multi-source candidate discovery pipeline to find newly-deployed
+    contracts that might be ERC-20 tokens.
+    """
+    items: list[dict[str, Any]] = []
+    params: dict[str, Any] | None = None
+    client = get_client()
+    for _ in range(max(1, pages)):
+        payload = await _get(client, "/smart-contracts", params=params)
+        page_items = (payload or {}).get("items") or []
+        if isinstance(page_items, list):
+            items.extend(page_items)
+        next_params = (payload or {}).get("next_page_params")
+        if not next_params:
+            break
+        params = next_params
+    return items

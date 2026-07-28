@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from app.core.config import settings
 from app.models.token import (
+    DiscoveryDiagnostics,
+    EnrichmentField,
+    EnrichmentReport,
     LaunchedToken,
     LiquiditySnapshot,
     PriceChangeSnapshot,
@@ -18,14 +22,26 @@ from app.models.token import (
 from app.models.token import WatchlistHit
 from app.models.token import is_valid_address
 from app.core import chains
-from app.services import alpha_timeline, analyzers, blockscout_client, contract_intel, contract_privileges, developer_network, developer_reputation, eligibility, honeypot_sim, launchpad_registry, rpc_client, smart_wallet_reputation, snapshot_store, wallet_intel, watchlist_store
+from app.services import alpha_timeline, analyzers, blockscout_client, candidate_discovery, contract_intel, contract_privileges, developer_network, developer_reputation, eligibility, honeypot_sim, launchpad_registry, rpc_client, smart_wallet_reputation, snapshot_store, wallet_intel, watchlist_store
 from app.services.analyzers import to_float, to_int
-from app.services.dexscreener_client import choose_best_pair, fetch_latest_pairs, fetch_token_pairs
+from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
 from app.services.opportunity_score import score_opportunity
 from app.services.scoring import LIMITATIONS, score_token, score_token_light
 
 logger = logging.getLogger(__name__)
+
+
+def _enrichment_status(report: "EnrichmentReport | None") -> str:
+    """Summarise enrichment completeness: complete / partial / minimal."""
+    if not report:
+        return "minimal"
+    dc = report.data_confidence
+    if dc >= 80:
+        return "complete"
+    if dc >= 40:
+        return "partial"
+    return "minimal"
 
 
 def _build_market_data(pair: dict | None) -> TokenMarketData | None:
@@ -554,6 +570,62 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
             holder_count=holder_distribution.holder_count,
         )
 
+    # ── Build enrichment report ──────────────────────────────────────
+    enrichment = EnrichmentReport()
+
+    if market_data and market_data.pair_address:
+        enrichment.pair = EnrichmentField(status="known", source="dexscreener", confidence="high")
+    elif pairs is not None:
+        enrichment.pair = EnrichmentField(status="unknown", source="dexscreener")
+    # else: not_analysed (default)
+
+    if market_data and market_data.price_usd:
+        enrichment.price = EnrichmentField(status="known", source="dexscreener", confidence="high")
+    elif market_data:
+        enrichment.price = EnrichmentField(status="unknown", source="dexscreener")
+
+    if market_data and market_data.liquidity and market_data.liquidity.usd is not None:
+        enrichment.liquidity = EnrichmentField(status="known", source="dexscreener", confidence="high")
+    elif market_data:
+        enrichment.liquidity = EnrichmentField(status="unknown", source="dexscreener")
+
+    if market_data and market_data.fdv is not None:
+        enrichment.fdv = EnrichmentField(status="known", source="dexscreener", confidence="high")
+    elif market_data:
+        enrichment.fdv = EnrichmentField(status="unknown", source="dexscreener")
+
+    if market_data and market_data.market_cap is not None:
+        enrichment.market_cap = EnrichmentField(status="known", source="dexscreener", confidence="high")
+    elif market_data:
+        enrichment.market_cap = EnrichmentField(status="unknown", source="dexscreener")
+
+    if market_data and market_data.volume and market_data.volume.h24 is not None:
+        enrichment.volume_h24 = EnrichmentField(status="known", source="dexscreener", confidence="high")
+    elif market_data:
+        enrichment.volume_h24 = EnrichmentField(status="unknown", source="dexscreener")
+
+    if holder_distribution and holder_distribution.holder_count:
+        enrichment.holders = EnrichmentField(status="known", source="blockscout", confidence="high")
+    elif holders_raw is not None:
+        enrichment.holders = EnrichmentField(status="unknown", source="blockscout")
+
+    if ctr_intel and ctr_intel.verified:
+        enrichment.verification = EnrichmentField(status="known", source="blockscout", confidence="high")
+    elif contract_payload is not None:
+        enrichment.verification = EnrichmentField(status="known", source="blockscout", confidence="medium")
+    # else: not_analysed
+
+    enrichment.launchpad = EnrichmentField(
+        status="known" if launchpad and launchpad.name else "unknown",
+        source="on_chain",
+    )
+
+    enrichment.smart_wallets = EnrichmentField(
+        status="known", source="watchlist", confidence="medium",
+    )
+
+    enrichment.compute_data_confidence()
+
     result = TokenAnalysisResponse(
         contract_address=normalized,
         chain=chains.active().chain_name,
@@ -576,12 +648,21 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
         bundle=bundle,
         buy_timing=buy_timing,
         trend=trend,
+        enrichment=enrichment,
     )
 
     result.developer_reputation = await developer_reputation.evaluate(result)
 
     # Developer network intelligence: ecosystem-level analysis
     result.developer_network = await developer_network.evaluate(result)
+
+    # Update enrichment with dev data now that it's available.
+    if enrichment:
+        if result.developer_reputation:
+            enrichment.developer = EnrichmentField(status="known", source="on_chain", confidence="high")
+        else:
+            enrichment.developer = EnrichmentField(status="unknown", source="on_chain")
+        enrichment.compute_data_confidence()
 
     # Evaluate smart wallet reputations for watchlist hits
     smart_hits = [h for h in watchlist_hits if h.kind == "smart"]
@@ -601,46 +682,6 @@ async def analyze_token_contract(contract_address: str, include_lore: bool = Tru
     return result
 
 
-async def _discover_recent_candidates(limit: int) -> list[dict]:
-    """Discover recent-launch candidates from DexScreener newest-pairs endpoint.
-
-    Returns token dicts keyed by ``address_hash`` (matching the shape scan_one expects)
-    sorted newest-first, filtered by launch age and minimum liquidity, deduplicated.
-    """
-    pairs = await fetch_latest_pairs()
-    max_age_ms = settings.scan_max_launch_age_days * 86_400_000
-    min_liq = settings.scan_min_candidate_liquidity_usd
-
-    seen: set[str] = set()
-    candidates: list[dict] = []
-    for p in pairs:
-        created = to_int(p.get("pairCreatedAt"))
-        if created is None:
-            continue
-        if max_age_ms > 0:
-            _, now_ms = _pair_age_ms(created)
-            if now_ms - created > max_age_ms:
-                continue
-        liq = to_float((p.get("liquidity") or {}).get("usd"))
-        if min_liq > 0 and liq is not None and liq < min_liq:
-            continue
-        base = p.get("baseToken") or {}
-        addr = base.get("address")
-        if not addr or addr.lower() in seen:
-            continue
-        if launchpad_registry.is_established_token(base.get("symbol"), base.get("name")):
-            continue
-        seen.add(addr.lower())
-        candidates.append({
-            "address_hash": addr,
-            "name": base.get("name"),
-            "symbol": base.get("symbol"),
-        })
-        if len(candidates) >= limit:
-            break
-    return candidates
-
-
 def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
     """Return (created_ms, now_ms). Split out so `now` can be stubbed in tests."""
     import time
@@ -651,54 +692,169 @@ def _pair_age_ms(_created_ms: int) -> tuple[int, int]:
 async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
     """Pull recent Robinhood Chain token launches, analyze each, and rank by risk score."""
     limit = min(limit, settings.scan_max_tokens)
-    # Discover candidates directly from DexScreener newest-pairs (sorted newest-first,
-    # filtered by launch age + liquidity floor, deduplicated, established tokens skipped).
-    tokens = await _discover_recent_candidates(limit)
+
+    # D2: multi-source candidate discovery with diagnostics.
+    discovered, discovery_diag = await candidate_discovery.discover_candidates(limit)
+
+    # Convert DiscoveredCandidate -> dict for scan_one (keeps existing deep_one interface)
+    tokens = [
+        {
+            "address_hash": c.address_hash,
+            "name": c.name,
+            "symbol": c.symbol,
+            "holders_count": c.holder_count,
+            "source": c.source,
+        }
+        for c in discovered
+    ]
 
     if not tokens:
         return ScanResponse(
             chain=chains.active().chain_name,
             status="no_tokens",
-            message="No recent launches found on DexScreener within the configured window.",
+            message="No recent launches found within the configured window.",
             analyzed=0,
             ranked_tokens=[],
             limitations=LIMITATIONS,
+            discovery=discovery_diag,
         )
 
     # Bound concurrent deep analyses so escalation cannot exhaust the API budget.
     deep_sem = asyncio.Semaphore(max(1, settings.scan_max_deep_analyses))
+    _hist: dict[str, int] = {
+        "age_too_old": 0, "no_dex_pair": 0, "timeout": 0,
+        "no_liquidity": 0, "no_market_data": 0, "api_failure": 0,
+        "other_exclusion": 0, "passed": 0,
+    }
 
     async def deep_one(token: dict, address: str) -> RankedToken | None:
+        logger.info(
+            "AUDIT_ENTRY contract=%s symbol=%s source=%s holders=%s",
+            address, token.get("symbol"), token.get("source"), token.get("holders_count"),
+        )
         async with deep_sem:
             try:
                 result = await analyze_token_contract(address, include_lore=include_lore)
-            except Exception as exc:  # keep the scan resilient to a single bad token
-                logger.warning("Scan: analysis failed for %s: %s", address, exc)
+            except Exception as exc:
+                _err = str(exc).lower()
+                _bucket = "timeout" if ("timeout" in _err or "timed out" in _err) else "api_failure"
+                _hist[_bucket] += 1
+                logger.info("AUDIT_REJECT contract=%s bucket=%s error=%s", address, _bucket, exc)
                 return None
+        _md = result.market_data
+        _age = result.token_age
+        logger.info(
+            "AUDIT_STEP contract=%s has_pair=%s pair_addr=%s age_days=%s liq_usd=%s vol_h24=%s mc=%s quote=%s",
+            address,
+            bool(_md and _md.pair_address),
+            _md.pair_address if _md else None,
+            _age.age_days if _age else None,
+            _md.liquidity.usd if _md and _md.liquidity else None,
+            _md.volume.h24 if _md and _md.volume else None,
+            _md.market_cap if _md else None,
+            _md.quote_token_symbol if _md else None,
+        )
         top_signal = max(result.analysis.signals, key=lambda s: s.points).name if result.analysis.signals else None
         opp = score_opportunity(result)
         qual = eligibility.evaluate(result)
         is_excluded = qual.qualification_level == "excluded"
+
+        # ── AUDIT: classify rejection reason ──────────────────────────────
+        if is_excluded:
+            _reasons = " | ".join(qual.rejection_reasons) if qual.rejection_reasons else "unknown"
+            _rl = _reasons.lower()
+            if "no market data" in _rl:
+                _hist["no_market_data"] += 1
+            elif "zero liquidity" in _rl:
+                _hist["no_liquidity"] += 1
+            elif "honeypot" in _rl or "sell tax" in _rl:
+                _hist["other_exclusion"] += 1
+            elif "risk score" in _rl:
+                _hist["other_exclusion"] += 1
+            else:
+                _hist["other_exclusion"] += 1
+            logger.info("AUDIT_REJECT contract=%s bucket=excluded reasons=%s", address, _reasons)
+        else:
+            _hist["passed"] += 1
+            logger.info("AUDIT_PASS contract=%s qual=%s confidence=%s", address, qual.qualification_level, qual.confidence_score)
+        # ── END AUDIT ─────────────────────────────────────────────────────
+
         lock = result.liquidity_lock
+
+        # Dimension scores — every token gets scored, even excluded ones.
+        risk = result.analysis.risk_score
+        security = max(0, 100 - risk)
+
+        liq_usd = result.market_data.liquidity.usd if result.market_data and result.market_data.liquidity else None
+        if liq_usd is not None and liq_usd > 0:
+            liquidity_s: int | None = min(100, int(math.log10(max(liq_usd, 1)) / math.log10(100_000) * 100))
+        elif liq_usd is not None:
+            liquidity_s = 0  # Known zero liquidity
+        else:
+            liquidity_s = None  # Unknown — not penalised
+
+        dev_rep = result.developer_reputation
+        dev_rep_s: int | None = max(0, min(100, dev_rep.score)) if dev_rep else None
+
+        dev_net = result.developer_network
+        dev_net_s: int | None = max(0, min(100, dev_net.score)) if dev_net else None
+
+        smart_count = sum(1 for h in result.watchlist_hits if h.kind == "smart")
+        smart_s = min(100, smart_count * 25)
+
+        if result.holders and result.holders.top10_percentage is not None:
+            top10 = result.holders.top10_percentage
+            holder_q: int | None = max(0, min(100, round(100 - top10)))
+        else:
+            holder_q = None  # Unknown — not penalised
+
+        vol = result.market_data.volume.h24 if result.market_data and result.market_data.volume else None
+        pc = result.market_data.price_change.h24 if result.market_data and result.market_data.price_change else None
+        if vol is not None or pc is not None:
+            momentum: int | None = 0
+            if vol and vol > 0:
+                momentum = min(50, int(math.log10(max(vol, 1)) * 10))
+            if pc is not None and pc > 0:
+                momentum = min(100, momentum + min(50, int(pc)))
+        else:
+            momentum = None  # No market activity data at all
+
+        # Composite — weighted average of known dimensions only (None = unknown, skipped).
+        w = settings.ranking_weights
+        parts = [
+            ("opportunity", opp.alpha_score),
+            ("security", security),
+            ("liquidity", liquidity_s),
+            ("dev_reputation", dev_rep_s),
+            ("dev_network", dev_net_s),
+            ("smart_wallet", smart_s),
+            ("confidence", qual.confidence_score),
+        ]
+        known_parts = [(k, v) for k, v in parts if v is not None]
+        total_w = sum(w.get(k, 0) for k, _ in known_parts)
+        composite: int | None = int(sum(v * w.get(k, 0) for k, v in known_parts) / total_w) if total_w > 0 else None
+        if composite is not None:
+            composite = max(0, min(100, composite))
+
         return RankedToken(
             contract_address=address,
             name=token.get("name"),
             symbol=token.get("symbol"),
-            risk_score=result.analysis.risk_score,
+            risk_score=risk,
             risk_level=result.analysis.risk_level,
             holder_count=result.holders.holder_count if result.holders else None,
-            liquidity_usd=result.market_data.liquidity.usd if result.market_data and result.market_data.liquidity else None,
+            liquidity_usd=liq_usd,
             market_cap=result.market_data.market_cap if result.market_data else None,
             fdv=result.market_data.fdv if result.market_data else None,
-            volume_h24=result.market_data.volume.h24 if result.market_data and result.market_data.volume else None,
+            volume_h24=vol,
             price_usd=result.market_data.price_usd if result.market_data else None,
-            price_change_h24=result.market_data.price_change.h24 if result.market_data and result.market_data.price_change else None,
+            price_change_h24=pc,
             age_hours=result.token_age.age_hours if result.token_age else None,
             age_days=result.token_age.age_days if result.token_age else None,
             top_signal=top_signal,
             flagged_by=result.watchlist_hits,
-            alpha_score=opp.alpha_score if not is_excluded else None,
-            alpha_level=opp.alpha_level if not is_excluded else None,
+            alpha_score=opp.alpha_score,
+            alpha_level=opp.alpha_level,
             alpha_signals=opp.signals,
             qualification_level=qual.qualification_level,
             confidence_score=qual.confidence_score,
@@ -706,25 +862,44 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             excluded_from_ranking=is_excluded,
             rejection_reasons=qual.rejection_reasons,
             eligibility_evidence=qual.evidence,
+            eligibility_warnings=qual.warnings,
+            security_score=security,
+            liquidity_score=liquidity_s,
+            dev_reputation_score=dev_rep_s,
+            dev_network_score=dev_net_s,
+            smart_wallet_score=smart_s,
+            holder_quality_score=holder_q,
+            momentum_score=momentum,
+            composite_score=composite,
             lock_status=lock.status if lock else "unknown",
             lock_percentage=lock.locked_percentage if lock else None,
             lock_provider=lock.locker_label if lock else None,
+            data_confidence=result.enrichment.data_confidence if result.enrichment else None,
+            enrichment_status=_enrichment_status(result.enrichment) if result.enrichment else None,
         )
 
     def _light_ranked(token: dict, address: str, light) -> RankedToken:
         """Lightweight result for a token the pre-screen skipped (no deep fetches)."""
+        security = max(0, 100 - light.risk_score)
+        hc = to_int(token.get("holders_count") or token.get("holders"))
+        holder_q = max(0, min(100, 100 - 30)) if hc and hc >= 500 else None  # conservative estimate
         return RankedToken(
             contract_address=address,
             name=token.get("name"),
             symbol=token.get("symbol"),
             risk_score=light.risk_score,
             risk_level=light.risk_level,
-            holder_count=to_int(token.get("holders_count") or token.get("holders")),
+            holder_count=hc,
             top_signal="Deep analysis skipped: low-risk on cheap pre-screen (high holder count).",
             alpha_score=0,
             alpha_level="low",
             qualification_level="good",
             confidence_score=60,
+            security_score=security,
+            holder_quality_score=holder_q,
+            composite_score=security,
+            eligibility_evidence=["High holder count", "Low risk on pre-screen"],
+            eligibility_warnings=["Deep analysis skipped"],
         )
 
     async def scan_one(token: dict) -> RankedToken | None:
@@ -733,13 +908,8 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
             return None
         if not settings.scan_tiering_enabled:
             return await deep_one(token, address)
-        # Light tier: holder count from list_tokens only — no extra requests.
         holder_count = to_int(token.get("holders_count") or token.get("holders"))
         light = score_token_light(holder_count)
-        # Promote on uncertainty. A token is skipped ONLY when it is confidently
-        # low-risk: a KNOWN holder count at/above the floor AND a light score below
-        # threshold. Unknown holder count, too few holders, or any light-score hit
-        # all promote to deep analysis — so nothing suspicious is ever skipped.
         confidently_safe = (
             holder_count is not None
             and holder_count >= settings.scan_established_holder_floor
@@ -750,11 +920,27 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
         return _light_ranked(token, address, light)
 
     results = await asyncio.gather(*(scan_one(t) for t in tokens))
+
+    # ── AUDIT: enrichment rejection histogram ─────────────────────────
+    logger.info("=" * 72)
+    logger.info("ENRICHMENT AUDIT HISTOGRAM  (candidates entered: %d)", len(tokens))
+    for _k, _v in _hist.items():
+        logger.info("  %-22s : %d", _k, _v)
+    _accounted = sum(_hist.values())
+    logger.info("  %-22s : %d", "TOTAL accounted", _accounted)
+    logger.info("  %-22s : %d", "scan_one returned None", sum(1 for r in results if r is None))
+    logger.info("=" * 72)
+    # ── END AUDIT ─────────────────────────────────────────────────────
+
     all_tokens = [r for r in results if r is not None]
-    # Qualification engine: only genuinely non-investable tokens are excluded.
     ranked = [r for r in all_tokens if r.qualification_level != "excluded"]
     excluded = [r for r in all_tokens if r.qualification_level == "excluded"]
-    ranked.sort(key=lambda r: (-(r.alpha_score or 0), -(r.confidence_score or 0), r.risk_score))
+    ranked.sort(key=lambda r: (-(r.composite_score or 0), -(r.alpha_score or 0), r.risk_score))
+
+    # Finalize diagnostics
+    discovery_diag.reached_qualification = len(all_tokens)
+    discovery_diag.reached_ranking = len(ranked)
+    discovery_diag.excluded = len(excluded)
 
     return ScanResponse(
         chain=chains.active().chain_name,
@@ -764,4 +950,5 @@ async def scan_and_rank(limit: int, include_lore: bool = False) -> ScanResponse:
         ranked_tokens=ranked,
         excluded_tokens=excluded,
         limitations=LIMITATIONS,
+        discovery=discovery_diag,
     )

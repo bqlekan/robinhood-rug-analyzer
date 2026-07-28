@@ -89,3 +89,127 @@ def test_missing_result_is_none(monkeypatch):
     # A well-formed body with neither result nor error (e.g. unknown tx) -> None.
     _use_client(monkeypatch, _FakeClient(body={"jsonrpc": "2.0", "id": 1, "result": None}))
     assert asyncio.run(rpc_client.get_transaction_receipt("0xmissing")) is None
+
+
+# ---------------------------------------------------------------------------
+# eth_getLogs
+# ---------------------------------------------------------------------------
+
+class TestGetLogs:
+    def test_returns_list_on_success(self, monkeypatch):
+        logs = [{"topics": ["0xabc"], "data": "0x00"}]
+        _use_client(monkeypatch, _FakeClient(body={"jsonrpc": "2.0", "id": 1, "result": logs}))
+        result = asyncio.run(rpc_client.get_logs(
+            address="0xfactory", topics=["0xabc"], from_block=100, to_block=200,
+        ))
+        assert result == logs
+
+    def test_returns_empty_on_rpc_error(self, monkeypatch):
+        _use_client(monkeypatch, _FakeClient(body={"jsonrpc": "2.0", "id": 1,
+                                                    "error": {"code": -32000, "message": "timeout"}}))
+        result = asyncio.run(rpc_client.get_logs(address="0xfactory", topics=["0xabc"]))
+        assert result == []
+
+    def test_filter_params_correct(self, monkeypatch):
+        client = _use_client(monkeypatch, _FakeClient(body={"result": []}))
+        asyncio.run(rpc_client.get_logs(
+            address="0xfactory", topics=["0xtopic0", None], from_block=10, to_block=20,
+        ))
+        _, sent = client.calls[0]
+        filt = sent["params"][0]
+        assert filt["address"] == "0xfactory"
+        assert filt["topics"] == ["0xtopic0", None]
+        assert filt["fromBlock"] == hex(10)
+        assert filt["toBlock"] == hex(20)
+
+    def test_omits_address_and_topics_when_none(self, monkeypatch):
+        client = _use_client(monkeypatch, _FakeClient(body={"result": []}))
+        asyncio.run(rpc_client.get_logs(from_block=0, to_block="latest"))
+        _, sent = client.calls[0]
+        filt = sent["params"][0]
+        assert "address" not in filt
+        assert "topics" not in filt
+
+
+# ---------------------------------------------------------------------------
+# eth_getLogs chunked
+# ---------------------------------------------------------------------------
+
+class TestGetLogsChunked:
+    def test_splits_range_into_chunks(self, monkeypatch):
+        call_count = 0
+
+        async def fake_get_logs(address=None, topics=None, from_block=0, to_block="latest"):
+            nonlocal call_count
+            call_count += 1
+            return [{"topics": ["0xt"], "blockNumber": hex(from_block)}]
+
+        monkeypatch.setattr(rpc_client, "get_logs", fake_get_logs)
+        # Block number resolution: fake eth_blockNumber
+        _use_client(monkeypatch, _FakeClient(body={"result": hex(5000)}))
+
+        result = asyncio.run(rpc_client.get_logs_chunked(
+            address="0xfactory", topics=["0xt"],
+            from_block=0, to_block=4999,
+            chunk_size=1000, max_chunks=10,
+        ))
+        assert call_count == 5  # 0-999, 1000-1999, 2000-2999, 3000-3999, 4000-4999
+        assert len(result) == 5
+
+    def test_respects_max_chunks(self, monkeypatch):
+        call_count = 0
+
+        async def fake_get_logs(address=None, topics=None, from_block=0, to_block="latest"):
+            nonlocal call_count
+            call_count += 1
+            return []
+
+        monkeypatch.setattr(rpc_client, "get_logs", fake_get_logs)
+
+        asyncio.run(rpc_client.get_logs_chunked(
+            address="0xfactory", topics=["0xt"],
+            from_block=0, to_block=100_000,
+            chunk_size=2000, max_chunks=3,
+        ))
+        assert call_count == 3
+
+    def test_invokes_checkpoint_cb(self, monkeypatch):
+        checkpoints = []
+
+        async def fake_get_logs(address=None, topics=None, from_block=0, to_block="latest"):
+            return []
+
+        monkeypatch.setattr(rpc_client, "get_logs", fake_get_logs)
+
+        asyncio.run(rpc_client.get_logs_chunked(
+            address="0xfactory", topics=["0xt"],
+            from_block=0, to_block=3999,
+            chunk_size=2000, max_chunks=10,
+            checkpoint_cb=lambda blk: checkpoints.append(blk),
+        ))
+        assert checkpoints == [1999, 3999]
+
+    def test_retries_transient_failure(self, monkeypatch):
+        attempt = 0
+
+        async def fake_get_logs(address=None, topics=None, from_block=0, to_block="latest"):
+            nonlocal attempt
+            attempt += 1
+            if attempt == 1:
+                raise ConnectionError("transient")
+            return [{"topics": ["0xt"]}]
+
+        monkeypatch.setattr(rpc_client, "get_logs", fake_get_logs)
+        # Shorten retry sleep
+        async def _noop_sleep(_):
+            pass
+
+        monkeypatch.setattr(rpc_client.asyncio, "sleep", _noop_sleep)
+
+        result = asyncio.run(rpc_client.get_logs_chunked(
+            address="0xfactory", topics=["0xt"],
+            from_block=0, to_block=100,
+            chunk_size=200, max_chunks=1, retries=2,
+        ))
+        assert len(result) == 1
+        assert attempt == 2

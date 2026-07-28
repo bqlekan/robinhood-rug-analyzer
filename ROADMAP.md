@@ -1431,6 +1431,32 @@ and M15 toward their upper effort bounds and may require a fallback provider.
 
 ---
 
+### D2 — Multi-source candidate discovery ✅
+
+**Problem:** The scanner relied on DexScreener's text search endpoint (`/latest/dex/search?q=robinhood`) as its sole discovery source. This endpoint returns at most ~30 relevance-ranked results — on a chain with 1,500+ daily launches, the vast majority of tokens were invisible to the scanner.
+
+**Solution:** A modular multi-source candidate discovery pipeline that gathers tokens from multiple on-chain providers, merges and deduplicates them, then enriches with DexScreener market data (demoted from primary discovery to enrichment-only).
+
+**Architecture:**
+- `candidate_discovery.py` — provider registry with four pluggable providers:
+  1. **Blockscout new tokens** — ERC-20 token listings sorted by holders ascending (newest/smallest first), paginated.
+  2. **Blockscout new contracts** — recently verified smart contracts, paginated.
+  3. **Launchpad factories** — scans transactions from configured factory addresses for contract creations.
+  4. **DexScreener search** — supplementary text search (still limited to ~30 results, but now one source among many).
+- Each provider independently toggleable via config (`discovery_*_enabled`).
+- Candidates merged into a single pool, deduplicated by lowercased address, filtered for established tokens.
+- DexScreener market-data enrichment runs AFTER discovery (price, liquidity, volume, pair metadata), with age + liquidity gates applied at enrichment stage.
+- `DiscoveryDiagnostics` model attached to `ScanResponse` — per-source raw/accepted/rejected counts with exact rejection reasons.
+- `launchpad_registry` extended with config-driven factory addresses (`discovery_launchpad_factories`, `discovery_dex_factories`) plus `get_discovery_factories()` and `match_factory_deployer()`.
+- `blockscout_client` extended with `list_new_tokens(pages)` and `list_new_smart_contracts(pages)`.
+- Frontend API unchanged — `ScanResponse.ranked_tokens` and `excluded_tokens` are identical; `discovery` field is optional/additive.
+
+**Pipeline:** Discover (multi-source) → Enrich (DexScreener) → Analyse → **Qualification** → Opportunity Score → Rank.
+**Tests:** 22 integration tests covering multi-source discovery, deduplication, market-data enrichment, launchpad detection, diagnostics, and end-to-end candidate flow.
+**Files:** `app/core/config.py`, `app/models/token.py`, `app/services/candidate_discovery.py`, `app/services/blockscout_client.py`, `app/services/launchpad_registry.py`, `app/services/rug_analyzer.py`, `tests/test_candidate_discovery.py`, `tests/test_scan_tiering.py`, `docs/ARCHITECTURE.md`, `docs/DATA_FLOW.md`, `ROADMAP.md`.
+
+---
+
 ## Prioritized checklist (highest ROI → lowest)
 
 ROI = detection/user value per unit effort-and-risk. Enablers rank high because they unblock everything downstream.
