@@ -13,7 +13,7 @@ from app.api.routes import router
 from app.api.kol_routes import router as kol_router
 from app.core.config import settings
 from app.core.logging_config import configure_logging
-from app.services import http, kol_scheduler, kol_watchlist, token_monitor, wallet_intel
+from app.services import http, kol_scheduler, kol_watchlist, rpc_client, token_monitor, wallet_intel
 
 # On Windows, StaticFiles derives Content-Type from the system registry, which often
 # maps .css/.js to text/plain. Browsers then refuse to apply the stylesheet, leaving an
@@ -95,6 +95,18 @@ async def _kol_scheduler_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Startup diagnostics: verify RPC connectivity and log chain identity.
+    try:
+        diag = await rpc_client.check_rpc()
+        logger.info(
+            "RPC check: chain_id=%s block=%s provider=%s",
+            diag.get("chain_id", diag.get("chain_id_error")),
+            diag.get("block", diag.get("block_error")),
+            diag["provider"],
+        )
+    except Exception as exc:
+        logger.warning("RPC startup check failed: %s", exc)
+
     tasks: list[asyncio.Task] = []
     if settings.watchlist_refresh_enabled:
         tasks.append(asyncio.create_task(_watchlist_refresh_loop()))

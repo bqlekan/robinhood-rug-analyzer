@@ -95,17 +95,20 @@ async function loadTopOpportunities() {
             </div>
             <div class="score-badges">
               <div class="summary-opp-score" style="background: ${opportunityColor(t.alpha_score)}">
-                <strong>${t.alpha_score ?? "–"}</strong>
+                <strong>${t.alpha_score ?? "–"}${t.scores_estimated ? "*" : ""}</strong>
                 <span>OPPORTUNITY</span>
               </div>
               <div class="score-badge score-badge-sm" style="background: ${riskColor(t.risk_score)}">
-                <strong>${t.risk_score}</strong>
+                <strong>${t.risk_score ?? "–"}${t.scores_estimated ? "*" : ""}</strong>
                 <span>RISK</span>
               </div>
             </div>
           </article>`,
         )
-        .join("")}</div>`;
+        .join("")}</div>
+      ${tokens.some((t) => t.scores_estimated)
+        ? `<p class="lore-meta">* estimated — same scoring engine, discovery data only (no on-chain verification)</p>`
+        : ""}`;
     wireTokenActions(topRiskBox);
   } catch (error) {
     topRiskBox.innerHTML = `

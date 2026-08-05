@@ -107,12 +107,15 @@ and scan tiering must land before the request-heavy detection work.
 
 **Blocker to solve first:** M1, so escalated deep analyses hit warm cache.
 
-- **As built:** light tier uses only `holders_count` from `list_tokens` (no extra requests).
-  Promote-on-uncertainty: a token is skipped only when confidently safe (known holder count
-  ≥ `scan_established_holder_floor` AND light score < `scan_light_promote_threshold`);
-  everything else escalates. `asyncio.Semaphore` bounds concurrent deep analyses.
-  `score_token_light` in `scoring.py`; policy in `scan_and_rank`. Tests in
-  `tests/test_scan_tiering.py`.
+- **As built:** the light tier calls the SAME `score_token` / `score_opportunity` /
+  `eligibility.evaluate` the deep path uses, fed only discovery data (DexScreener pair +
+  holder count), with unverified dimensions passed as explicit unknown markers so the
+  engine applies its normal unknown-penalties. Results are flagged `scores_estimated=True`.
+  Promote-on-uncertainty: a token is skipped only when holders ≥ `scan_established_holder_floor`
+  AND liquidity ≥ `scan_light_min_liquidity_usd` AND the resulting estimate scores below
+  `scan_light_promote_threshold`; everything else escalates. `asyncio.Semaphore` bounds
+  concurrent deep analyses. Policy in `scan_and_rank`. Tests in `tests/test_scan_tiering.py`
+  and `tests/test_scan_scoring_consistency.py`.
 
 ### M3 — Real token age from contract creation ✅ COMPLETE
 
@@ -221,8 +224,8 @@ and scan tiering must land before the request-heavy detection work.
 > **As built:** `RugAnalysis` gains `confidence` (0–100) + `confidence_level`
 > (low/medium/high), computed in `scoring.py` from which core inputs were present
 > (market, holders, age, dev, liquidity_lock). Additive metadata only — does not
-> affect `risk_score`/`risk_level`. `score_token_light` reports low confidence
-> honestly. UI shows a "Data Confidence" card, escaped. Tests in `tests/test_scoring.py`.
+> affect `risk_score`/`risk_level`. The scanner's light tier reports low confidence
+> honestly (fewer inputs present -> lower confidence). UI shows a "Data Confidence" card, escaped. Tests in `tests/test_scoring.py`.
 
 - **Goal:** Surface a confidence indicator alongside the risk score reflecting which inputs
   were available (holders, source, pair, transfers).

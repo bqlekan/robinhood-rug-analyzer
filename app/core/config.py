@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     dexscreener_chain: str = "robinhood"
     # Free, keyless public Blockscout REST API for Robinhood Chain.
     blockscout_base_url: str = "https://robinhoodchain.blockscout.com"
-    # Public RPC (rate limited). Override with an Alchemy URL for production.
+    # JSON-RPC endpoint. Defaults to the free public RPC (rate limited). For production,
+    # override with an Alchemy URL: https://robinhood-mainnet.g.alchemy.com/v2/YOUR_KEY
     rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
 
     # Networking.
@@ -64,15 +65,15 @@ class Settings(BaseSettings):
     lp_lock_near_term_days: int = 30
 
     # --- Scan tiering (M2) ---
-    # A cheap pre-screen ranks candidates using ONLY list_tokens metadata (no extra
-    # requests), promoting anything not confidently low-risk into full deep analysis.
+    # Light tier: same scoring engine, partial inputs (no RPC). Estimates risky enough
+    # to exceed the threshold still promote to full deep analysis.
     scan_tiering_enabled: bool = True
-    # Light score at/above which a token is promoted to deep analysis. Lower =
-    # more tokens promoted (safer, more requests); higher = more skipped.
+    # Composite risk score at/above which even a light estimate promotes to deep.
     scan_light_promote_threshold: int = 25
-    # A token needs at least this many holders to be considered confidently
-    # low-risk on the cheap signal alone; fewer (or unknown) -> promote.
+    # A token needs at least this many holders to skip deep analysis.
     scan_established_holder_floor: int = 500
+    # Minimum liquidity (USD) required to skip deep analysis.
+    scan_light_min_liquidity_usd: float = 100_000
     # Max concurrent deep analyses in flight during a scan (bounds fan-out).
     scan_max_deep_analyses: int = 5
 

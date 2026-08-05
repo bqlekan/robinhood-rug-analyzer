@@ -218,7 +218,7 @@ opportunity score tier colors). The frontend is an **Opportunity Intelligence da
 - Failure modes: raises `ValueError` on invalid address; every sub-fetch degrades to `None`/`[]`; `scan_and_rank` wraps each deep analysis so one bad token is dropped; funder/creator traces use `gather(return_exceptions=True)`.
 
 **`app/services/scoring.py`** — weighted, additive, explainable risk scoring (pure).
-- Public: `score_token(*, age, market, holders, clusters, dev, liquidity_lock, launchpad, lore, data_sources, honeypot=None) -> RugAnalysis`; `score_token_light(holder_count) -> RugAnalysis`.
+- Public: `score_token(*, age, market, holders, clusters, dev, liquidity_lock, launchpad, lore, data_sources, honeypot=None) -> RugAnalysis`. This is the ONLY risk scorer — both the deep path and the scanner's light tier call it; they differ in input coverage, never in logic.
 - Dependencies: pure, only `models.token`; no I/O, no settings (thresholds are inline constants).
 - Extension: append a scoring block plus a `_CONFIDENCE_WEIGHTS` entry.
 - Failure modes: cannot raise on missing data; absent dimensions produce no signals. Full model in section 9.
@@ -784,7 +784,7 @@ analysis. Pool sizes come from config: `scan_candidate_pool`,
 1. **Discover** — `candidate_discovery.discover_candidates()` runs all enabled providers concurrently (Blockscout tokens by market cap, fiat value, holder count; launchpad factories), merges, deduplicates by lowercased address (bumping `source_count` on duplicates), filters established tokens/zero holders, enriches top `scan_light_pool` candidates with DexScreener market data. Returns `(candidates, DiscoveryDiagnostics)`.
 2. **Lite score** — `score_opportunity_lite(candidate)` assigns a 0–100 priority using only discovery metadata (pair existence, liquidity, holder count, freshness, market cap, source diversity). Zero RPC calls.
 3. **Select** — Sort by `lite_score` desc, take top `scan_deep_pool` (default 30) for deep analysis.
-4. **Deep analyse** — Per token: if tiering is off → always deep. Else compute `score_token_light`. Confidently safe tokens (known holders ≥ floor, low risk) get a lightweight result. Everything else promotes to `analyze_token_contract` under `Semaphore(scan_max_deep_analyses)`. A `TTLCache` (`deep_analysis_cache_ttl`, default 300s) caches `RankedToken` results by address — cache hit = zero RPC.
+4. **Deep analyse** — Per token: if tiering is off → always deep. Else a token with holders ≥ `scan_established_holder_floor` AND liquidity ≥ `scan_light_min_liquidity_usd` gets a **light estimate**: the same `score_token` / `score_opportunity` / `eligibility.evaluate`, fed only the discovery data (DexScreener pair + holder count), with unverified dimensions passed as explicit unknown markers (`LiquidityLock(status="unknown")`, `LaunchpadInfo(name="Unknown")`) so the engine applies its normal unknown-penalties. The result is flagged `scores_estimated=True`. If the estimate itself scores ≥ `scan_light_promote_threshold`, the token promotes to full analysis anyway. Everything else promotes to `analyze_token_contract` under `Semaphore(scan_max_deep_analyses)`. A `TTLCache` (`deep_analysis_cache_ttl`, default 300s) caches `RankedToken` results by address — cache hit = zero RPC.
 5. **Score** — `score_opportunity(result)` and `eligibility.evaluate(result)` produce alpha/qualification/confidence/dimension scores.
 6. **Rank** — Only `excluded` tokens (confirmed rugs, dead contracts, honeypots, blacklisted) are removed. All others ranked by `(composite_score desc, alpha_score desc, risk_score asc)`.
 7. **Paginate** — `page` and `page_size` slice the ranked list. `ScanResponse` includes `total_ranked`, `total_pages`, and `page`.
@@ -1111,7 +1111,7 @@ Which subsystem each **completed** milestone introduced (per `ROADMAP.md`).
 | Milestone | Status | Subsystem it introduced / changed |
 |---|---|---|
 | M1 — HTTP response caching | Done | `cache.py` `TTLCache`; caching discipline on immutable reads |
-| M2 — Scan tiering / lightweight pre-scan | Done | `score_token_light` + the light/deep promotion in `scan_and_rank` |
+| M2 — Scan tiering / lightweight pre-scan | Done | Shared scoring engine; light tier uses partial inputs + unknown markers |
 | M3 — Real token age from contract creation | Done | age from creation tx in `analyze_age` / orchestrator |
 | M4 — Contract-aware insider/holder filtering | Done | `known_contracts` filtering in wallet intel + holder analysis |
 | M5 — Union-find cluster re-keying | Done | `_UnionFind` merge in `analyze_clusters` |

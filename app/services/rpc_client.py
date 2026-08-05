@@ -15,6 +15,7 @@ milestones needing raw RPC access (M11 privilege reads, M13 locker state).
 import asyncio
 import logging
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -190,3 +191,30 @@ async def get_logs_chunked(
         chunks_done += 1
 
     return all_logs
+
+
+# ---------------------------------------------------------------------------
+# Startup diagnostics
+# ---------------------------------------------------------------------------
+
+async def check_rpc() -> dict[str, Any]:
+    """Startup diagnostic: chain_id, latest block, and provider hostname.
+
+    Returns {"chain_id": int, "block": int, "provider": str} or error keys on failure.
+    """
+    chain_id_hex = await _rpc("eth_chainId", [])
+    block_hex = await _rpc("eth_blockNumber", [])
+    rpc_url = chains.active().rpc_url
+    # Hostname only — the full URL carries the Alchemy API key and must never be logged.
+    provider = urlparse(rpc_url).hostname or "unknown"
+
+    result: dict[str, Any] = {"provider": provider}
+    if chain_id_hex is not None:
+        result["chain_id"] = int(chain_id_hex, 16)
+    else:
+        result["chain_id_error"] = "eth_chainId failed"
+    if block_hex is not None:
+        result["block"] = int(block_hex, 16)
+    else:
+        result["block_error"] = "eth_blockNumber failed"
+    return result

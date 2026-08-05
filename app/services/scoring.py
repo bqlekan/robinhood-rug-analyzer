@@ -303,31 +303,3 @@ def score_token(
     )
 
 
-def score_token_light(holder_count: int | None) -> RugAnalysis:
-    """Cheap first-pass score from `list_tokens` metadata only (no extra requests).
-
-    Uses ONLY holder count — the single risk-relevant field the token list returns.
-    Reuses the exact holder thresholds/points from `score_token` so a light score is
-    directly comparable to the deep score's holder contribution. The promotion policy
-    (promote on high light score OR unknown holder count) lives in the scanner, so this
-    stays a pure scorer.
-    """
-    signals: list[RiskSignal] = []
-    if holder_count is not None and holder_count < 50:
-        _sig(signals, "Few holders", "holders", "high", 18, f"Only {holder_count} holders; easy for a few wallets to control price.")
-    elif holder_count is not None and holder_count < 200:
-        _sig(signals, "Low holder count", "holders", "medium", 8, f"{holder_count} holders is still concentrated.")
-
-    score = min(sum(s.points for s in signals), 100)
-    # A light pre-screen saw only holder count from the token list, so confidence
-    # is intentionally low — a low light score is "not yet examined", not "safe".
-    confidence, confidence_level = _confidence({"holders": holder_count is not None})
-    return RugAnalysis(
-        risk_score=score,
-        risk_level=_score_level(score),
-        confidence=confidence,
-        confidence_level=confidence_level,
-        signals=signals,
-        data_sources=["Blockscout token list (light pre-screen)"],
-        limitations=LIMITATIONS,
-    )

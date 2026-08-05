@@ -580,8 +580,8 @@ class OpportunitySignal(BaseModel):
 
 
 class OpportunityResult(BaseModel):
-    alpha_score: int
-    alpha_level: str
+    alpha_score: int | None
+    alpha_level: str | None
     signals: list[OpportunitySignal] = Field(default_factory=list)
 
 
@@ -630,6 +630,8 @@ class RankedToken(BaseModel):
     # Enrichment metadata.
     data_confidence: int | None = None
     enrichment_status: str | None = None  # "complete" | "partial" | "minimal"
+    # True when scores came from light tier: same engine, partial inputs (no RPC).
+    scores_estimated: bool = False
 
 
 # --- Launchpad plugin definitions ---

@@ -61,7 +61,10 @@ market data (price, liquidity, volume, pair metadata) →
 discovery metadata (zero RPC) →
 4. **Select** — sort by `lite_score` desc, take top `scan_deep_pool` (default 30) →
 5. **Deep analyse** — per token: `scan_tiering` promotes uncertain tokens to
-full `analyze_token_contract`; `TTLCache` (`deep_analysis_cache_ttl`) avoids
+full `analyze_token_contract`; established, liquid tokens instead get a light
+estimate from the *same* scoring engine on discovery data only (flagged
+`scores_estimated`, promoted anyway if the estimate scores risky);
+`TTLCache` (`deep_analysis_cache_ttl`) avoids
 re-analysis within the cache window → **qualification engine**
 (`eligibility.evaluate`) classifies each token with a `qualification_level`
 (excellent/good/speculative/high_risk/excluded) and `confidence_score` (0–100) →

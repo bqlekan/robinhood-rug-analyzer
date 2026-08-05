@@ -9,7 +9,10 @@ from app.models.token import (
     DiscoveryDiagnostics,
     EnrichmentField,
     EnrichmentReport,
+    HolderDistribution,
     LaunchedToken,
+    LaunchpadInfo,
+    LiquidityLock,
     LiquiditySnapshot,
     PriceChangeSnapshot,
     RankedToken,
@@ -27,7 +30,7 @@ from app.services.analyzers import to_float, to_int
 from app.services.dexscreener_client import choose_best_pair, fetch_token_pairs
 from app.services.lore_client import build_lore
 from app.services.opportunity_score import score_opportunity, score_opportunity_lite
-from app.services.scoring import LIMITATIONS, score_token, score_token_light
+from app.services.scoring import LIMITATIONS, score_token
 from app.services.cache import TTLCache, MISS
 
 logger = logging.getLogger(__name__)
@@ -740,6 +743,10 @@ async def scan_and_rank(page: int = 1, page_size: int = 15, include_lore: bool =
             "symbol": c.symbol,
             "holders_count": c.holder_count,
             "source": c.source,
+            # Discovery already fetched the DexScreener pair; carry it so the
+            # light path can report market data instead of dropping it.
+            "pair": c.pair,
+            "lite_score": c.lite_score,
         }
         for c in deep_candidates
     ]
@@ -918,28 +925,86 @@ async def scan_and_rank(page: int = 1, page_size: int = 15, include_lore: bool =
 
         return ranked_token
 
-    def _light_ranked(token: dict, address: str, light) -> RankedToken:
-        """Lightweight result for a token the pre-screen skipped (no deep fetches)."""
-        security = max(0, 100 - light.risk_score)
+    def _light_ranked(token: dict, address: str) -> RankedToken:
+        """Estimate for a token that skipped deep analysis — same engine, fewer inputs.
+
+        Calls the SAME `score_token` / `score_opportunity` / `eligibility.evaluate`
+        the deep path calls, with only what discovery already fetched (the
+        DexScreener pair on `token["pair"]` plus holder count). Dimensions that were
+        not checked are passed as explicit unknown markers so the engine applies its
+        normal unknown-penalties — the estimate is conservative, never a false clean.
+        """
         hc = to_int(token.get("holders_count") or token.get("holders"))
-        holder_q = max(0, min(100, 100 - 30)) if hc and hc >= 500 else None  # conservative estimate
+        md = _build_market_data(token.get("pair"))
+        age = analyzers.analyze_age((token.get("pair") or {}).get("pairCreatedAt"), None)
+        holders = HolderDistribution(holder_count=hc) if hc is not None else None
+
+        analysis = score_token(
+            age=age,
+            market=md,
+            holders=holders,
+            clusters=None,
+            dev=None,
+            # Not verified on this path — scored as unknown, not as safe.
+            liquidity_lock=LiquidityLock(status="unknown"),
+            launchpad=LaunchpadInfo(name="Unknown", confidence="low"),
+            lore=None,
+            data_sources=["DexScreener pair", "Blockscout token list"],
+        )
+
+        partial = TokenAnalysisResponse(
+            contract_address=address,
+            chain=chains.active().chain_name,
+            status="ok",
+            message="Estimated from discovery data; deep analysis skipped.",
+            token_age=age,
+            market_data=md,
+            holders=holders,
+            liquidity_lock=LiquidityLock(status="unknown"),
+            launchpad=LaunchpadInfo(name="Unknown", confidence="low"),
+            analysis=analysis,
+        )
+        opp = score_opportunity(partial)
+        partial.alpha_score = opp.alpha_score
+        partial.alpha_level = opp.alpha_level
+        qual = eligibility.evaluate(partial)
+
+        security = max(0, 100 - analysis.risk_score)
+        liq_usd = md.liquidity.usd if md and md.liquidity else None
         return RankedToken(
             contract_address=address,
-            name=token.get("name"),
-            symbol=token.get("symbol"),
-            risk_score=light.risk_score,
-            risk_level=light.risk_level,
+            name=token.get("name") or (md.base_token_name if md else None),
+            symbol=token.get("symbol") or (md.base_token_symbol if md else None),
+            risk_score=analysis.risk_score,
+            risk_level=analysis.risk_level,
             holder_count=hc,
-            top_signal="Deep analysis skipped: low-risk on cheap pre-screen (high holder count).",
-            alpha_score=0,
-            alpha_level="low",
-            qualification_level="good",
-            confidence_score=60,
+            liquidity_usd=liq_usd,
+            market_cap=md.market_cap if md else None,
+            fdv=md.fdv if md else None,
+            volume_h24=md.volume.h24 if md and md.volume else None,
+            price_usd=md.price_usd if md else None,
+            price_change_h24=md.price_change.h24 if md and md.price_change else None,
+            age_hours=age.age_hours,
+            age_days=age.age_days,
+            top_signal=(
+                max(analysis.signals, key=lambda s: s.points).name
+                if analysis.signals
+                else "No risk signals in discovery data (not on-chain verified)."
+            ),
+            alpha_score=opp.alpha_score,
+            alpha_level=opp.alpha_level,
+            alpha_signals=opp.signals,
+            qualification_level=qual.qualification_level,
+            confidence_score=qual.confidence_score,
+            eligible=qual.qualification_level != "excluded",
+            excluded_from_ranking=qual.qualification_level == "excluded",
+            rejection_reasons=qual.rejection_reasons,
             security_score=security,
-            holder_quality_score=holder_q,
             composite_score=security,
-            eligibility_evidence=["High holder count", "Low risk on pre-screen"],
-            eligibility_warnings=["Deep analysis skipped"],
+            eligibility_evidence=qual.evidence,
+            eligibility_warnings=qual.warnings + ["Deep analysis skipped: scores estimated"],
+            data_confidence=analysis.confidence,
+            scores_estimated=True,
         )
 
     async def scan_one(token: dict) -> RankedToken | None:
@@ -948,16 +1013,24 @@ async def scan_and_rank(page: int = 1, page_size: int = 15, include_lore: bool =
             return None
         if not settings.scan_tiering_enabled:
             return await deep_one(token, address)
+
         holder_count = to_int(token.get("holders_count") or token.get("holders"))
-        light = score_token_light(holder_count)
+        pair = token.get("pair") or {}
+        liq = (pair.get("liquidity") or {}).get("usd")
         confidently_safe = (
             holder_count is not None
             and holder_count >= settings.scan_established_holder_floor
-            and light.risk_score < settings.scan_light_promote_threshold
+            and liq is not None
+            and liq >= settings.scan_light_min_liquidity_usd
         )
         if not confidently_safe:
             return await deep_one(token, address)
-        return _light_ranked(token, address, light)
+
+        # Gate passed — estimate. If the estimate itself is risky, promote anyway.
+        ranked = _light_ranked(token, address)
+        if ranked.risk_score >= settings.scan_light_promote_threshold:
+            return await deep_one(token, address)
+        return ranked
 
     t0 = _time.monotonic()
     results = await asyncio.gather(*(scan_one(t) for t in tokens))

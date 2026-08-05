@@ -213,3 +213,47 @@ class TestGetLogsChunked:
         ))
         assert len(result) == 1
         assert attempt == 2
+
+
+# ---------------------------------------------------------------------------
+# Startup diagnostics
+# ---------------------------------------------------------------------------
+
+class TestCheckRpc:
+    def test_reports_chain_id_block_and_provider(self, monkeypatch):
+        monkeypatch.setattr(
+            rpc_client.settings, "rpc_url", "https://rpc.mainnet.chain.robinhood.com"
+        )
+
+        async def fake_rpc(method, params):
+            return {"eth_chainId": hex(4663), "eth_blockNumber": hex(9_000_000)}[method]
+
+        monkeypatch.setattr(rpc_client, "_rpc", fake_rpc)
+        out = asyncio.run(rpc_client.check_rpc())
+        assert out["chain_id"] == 4663
+        assert out["block"] == 9_000_000
+        # Provider is the hostname only — an API key in the path must never leak.
+        assert out["provider"] == "rpc.mainnet.chain.robinhood.com"
+
+    def test_provider_is_hostname_only_for_alchemy_url(self, monkeypatch):
+        monkeypatch.setattr(
+            rpc_client.settings, "rpc_url",
+            "https://robinhood-mainnet.g.alchemy.com/v2/SECRET_KEY",
+        )
+
+        async def fake_rpc(method, params):
+            return hex(1)
+
+        monkeypatch.setattr(rpc_client, "_rpc", fake_rpc)
+        out = asyncio.run(rpc_client.check_rpc())
+        assert out["provider"] == "robinhood-mainnet.g.alchemy.com"
+        assert "SECRET_KEY" not in str(out)
+
+    def test_degrades_to_error_keys_on_failure(self, monkeypatch):
+        async def fake_rpc(method, params):
+            return None
+
+        monkeypatch.setattr(rpc_client, "_rpc", fake_rpc)
+        out = asyncio.run(rpc_client.check_rpc())
+        assert "chain_id" not in out and "block" not in out
+        assert out["chain_id_error"] and out["block_error"]

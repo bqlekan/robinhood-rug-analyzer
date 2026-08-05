@@ -1,8 +1,9 @@
-"""Unit tests for M2 scan tiering: light pre-screen + promote-on-uncertainty.
+"""Unit tests for M2 scan tiering: light estimate + promote-on-uncertainty.
 
 The light tier must NEVER skip a suspicious token. A token is skipped only when it
-is confidently low-risk: a known holder count at/above the floor and a light score
-below threshold. Everything else promotes to deep analysis.
+is confidently established (holder count at/above the floor AND liquidity above the
+floor) and the resulting estimate scores below the promote threshold. Everything
+else promotes to deep analysis.
 """
 
 import asyncio
@@ -19,31 +20,20 @@ from app.models.token import (
 )
 from app.services import rug_analyzer
 from app.services import candidate_discovery
-from app.services.scoring import score_token_light
 
 
-# --- Light scorer (pure) ---
-
-
-def test_light_scorer_few_holders_scores_high():
-    a = score_token_light(12)
-    assert a.risk_score == 18
-    assert a.signals[0].name == "Few holders"
-
-
-def test_light_scorer_low_holders_scores_medium():
-    a = score_token_light(150)
-    assert a.risk_score == 8
-
-
-def test_light_scorer_many_holders_scores_zero():
-    assert score_token_light(5000).risk_score == 0
-
-
-def test_light_scorer_unknown_holders_scores_zero_but_signals_empty():
-    a = score_token_light(None)
-    assert a.risk_score == 0
-    assert a.signals == []
+# A pair with enough liquidity to clear the light-tier gate.
+_RICH_PAIR = {
+    "chainId": "robinhood",
+    "pairAddress": "0xpair",
+    "baseToken": {"name": "Safe", "symbol": "SAFE"},
+    "priceUsd": "1.0",
+    "marketCap": 5_000_000,
+    "liquidity": {"usd": 500_000.0},
+    "volume": {"h24": 250_000.0},
+    "priceChange": {"h24": 1.0},
+    "pairCreatedAt": 1_700_000_000_000,
+}
 
 
 # --- Promotion policy (via scan_and_rank with deep analysis stubbed) ---
@@ -72,7 +62,11 @@ def _stub_deep(monkeypatch):
 
 
 def _stub_discovery(monkeypatch, tokens):
-    """Stub candidate_discovery.discover_candidates to return the given tokens directly."""
+    """Stub candidate_discovery.discover_candidates to return the given tokens directly.
+
+    Each token carries `_RICH_PAIR` by default so the light-tier liquidity gate can
+    be reached; pass `pair=None` explicitly to test the no-pair path.
+    """
     from app.models.token import DiscoveryDiagnostics
 
     async def fake_discover():
@@ -83,6 +77,7 @@ def _stub_discovery(monkeypatch, tokens):
                 symbol=t.get("symbol"),
                 holder_count=t.get("holders_count"),
                 source="test",
+                pair=t["pair"] if "pair" in t else _RICH_PAIR,
             )
             for t in tokens
         ]
@@ -100,7 +95,26 @@ def test_high_holder_token_is_skipped(monkeypatch):
     _stub_discovery(monkeypatch, [{"address_hash": "0xsafe", "holders_count": 5000, "name": "Safe"}])
     resp = _run(rug_analyzer.scan_and_rank(page_size=1))
     assert "0xsafe" not in promoted  # skipped, no deep fetch
-    assert resp.ranked_tokens[0].top_signal.startswith("Deep analysis skipped")
+    assert resp.ranked_tokens[0].scores_estimated is True
+
+
+def test_low_liquidity_token_is_promoted(monkeypatch):
+    """Established holder count is no longer enough on its own — liquidity gates too."""
+    promoted = _stub_deep(monkeypatch)
+    thin = {**_RICH_PAIR, "liquidity": {"usd": 1_000.0}}
+    _stub_discovery(
+        monkeypatch,
+        [{"address_hash": "0xthin", "holders_count": 5000, "pair": thin}],
+    )
+    _run(rug_analyzer.scan_and_rank(page_size=1))
+    assert "0xthin" in promoted
+
+
+def test_no_pair_token_is_promoted(monkeypatch):
+    promoted = _stub_deep(monkeypatch)
+    _stub_discovery(monkeypatch, [{"address_hash": "0xnopair", "holders_count": 5000, "pair": None}])
+    _run(rug_analyzer.scan_and_rank(page_size=1))
+    assert "0xnopair" in promoted
 
 
 def test_few_holders_token_is_promoted(monkeypatch):

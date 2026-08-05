@@ -9,8 +9,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Logs
-logs/*.log
+# Logs — runtime output, never committed.
+# NB: bare *.log misses rotated files (app.log.1, app.log.2, ...), which is how
+# logs/app.log.1 ended up tracked. Ignore the whole directory instead.
+logs/
+!logs/.gitkeep
+*.log
+*.log.*
 
 # Solidity build intermediates (runtime bytecode is pinned in app/core/honeypot_artifact.py)
 contracts/*.bin-runtime

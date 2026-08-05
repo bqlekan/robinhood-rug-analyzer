@@ -200,11 +200,11 @@ def score_opportunity(result: TokenAnalysisResponse) -> OpportunityResult:
             results.append(sr)
 
     if not results:
-        return OpportunityResult(alpha_score=0, alpha_level="low", signals=[])
+        return OpportunityResult(alpha_score=None, alpha_level=None, signals=[])
 
     total_weight = sum(weights.get(r.name, 0) for r in results)
     if total_weight <= 0:
-        return OpportunityResult(alpha_score=0, alpha_level="low", signals=[])
+        return OpportunityResult(alpha_score=None, alpha_level=None, signals=[])
 
     weighted_sum = sum(r.value * weights.get(r.name, 0) for r in results)
     alpha = int(weighted_sum / total_weight)
